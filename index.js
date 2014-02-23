@@ -1,3 +1,4 @@
+'use strict';
 var redis = require('redis'),
 	crypto = require('crypto');
 
@@ -15,11 +16,24 @@ module.exports = function() {
 	}
 
 	function writeKeyToRedis(ns, key, value, ttl, done) {
+		// Node-style errors are not stringifiable in the normal way as they contain circular structures
+		if (value[0] instanceof Error) {
+			value[0] = cleanError(value[0]);
+		}
 		if(ttl !== 0) {
 			client.setex('memos:' + ns + ':' + key, ttl, JSON.stringify(value), done);
 		} else {
 			process.nextTick(done || function() {});
 		}
+	}
+
+	function cleanError(err) {
+		var plainObject = {};
+		Object.getOwnPropertyNames(err).forEach(function(key) {
+			if (key[0] === '_') return; // don't save trace, previous, etc
+			plainObject[key] = err[key];
+		});
+		return plainObject;
 	}
 
 	return function memoize(fn, ttl) {
@@ -30,7 +44,7 @@ module.exports = function() {
 		if(typeof ttl == 'function') {
 			ttlfn = ttl;
 		} else {
-			ttlfn = function() { return ttl || 120; }
+			ttlfn = function() { return ttl || 120; };
 		}
 
 		return function memoizedFunction() {
@@ -63,6 +77,6 @@ module.exports = function() {
 					}));
 				}
 			});
-		}
-	}
-}
+		};
+	};
+};
