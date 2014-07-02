@@ -66,7 +66,10 @@ module.exports = function() {
 					fn.apply(self, args.concat(function() {
 						var resultArgs = Array.prototype.slice.call(arguments);
 
-						writeKeyToRedis(functionKey, argsStringified, resultArgs, ttlfn.apply(null, resultArgs));
+						// Don't write results that throw a connection error (service interruption);
+						if (!(resultArgs[0] instanceof Error && /ECONNREFUSED/.test(resultArgs[0].message))) {
+							writeKeyToRedis(functionKey, argsStringified, resultArgs, ttlfn.apply(null, resultArgs));
+						} 
 
 						if(inFlight[argsStringified]) {
 							inFlight[argsStringified].forEach(function(cb) {
