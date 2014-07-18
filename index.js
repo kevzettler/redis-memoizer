@@ -4,13 +4,23 @@ var redis = require('redis'),
 
 module.exports = function() {
 	var client = redis.createClient.apply(null, arguments);
+	
+	// Apply key namespace, if present.
+	var options = arguments[arguments.length - 1];
+	var keyNamespace = 'memos:';
+
+	// Allow custom namespaces, e.g. by git revision.
+	if (Object.prototype.toString.call(options) === '[object Object]' && options.memoize_key_namespace) {
+		keyNamespace += options.memoize_key_namespace;
+		if (keyNamespace.slice(-1) !== ':') keyNamespace += ':';
+	}
 
 	function hash(string) {
 		return crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 	}
 
 	function getKeyFromRedis(ns, key, done) {
-		client.get('memos:' + ns + ':' + key, function(err, value) {
+		client.get(keyNamespace + ns + ':' + key, function(err, value) {
 			done(err, JSON.parse(value));
 		});
 	}
@@ -21,7 +31,7 @@ module.exports = function() {
 			value[0] = cleanError(value[0]);
 		}
 		if(ttl !== 0) {
-			client.setex('memos:' + ns + ':' + key, ttl, JSON.stringify(value), done);
+			client.setex(keyNamespace + ns + ':' + key, ttl, JSON.stringify(value), done);
 		} else {
 			process.nextTick(done || function() {});
 		}
