@@ -1,9 +1,14 @@
 'use strict';
 var redis = require('redis'),
+  RedisClient = redis.RedisClient,
 	crypto = require('crypto');
 
-module.exports = function() {
-	var client = redis.createClient.apply(null, arguments);
+module.exports = function(client) {
+	// Support passing in an existing client. If the first arg is not a client, assume that it is
+	// connection parameters.
+	if (!(client instanceof RedisClient)) {
+	  client = redis.createClient.apply(null, arguments);
+	}
 	
 	// Apply key namespace, if present.
 	var options = arguments[arguments.length - 1];
