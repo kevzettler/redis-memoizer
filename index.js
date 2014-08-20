@@ -6,7 +6,7 @@ var redis = require('redis'),
 module.exports = function(client) {
 	// Support passing in an existing client. If the first arg is not a client, assume that it is
 	// connection parameters.
-	if (!(client instanceof RedisClient)) {
+	if (!(client && client.connectionOption)) {
 	  client = redis.createClient.apply(null, arguments);
 	}
 	
