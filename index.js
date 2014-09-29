@@ -25,12 +25,18 @@ module.exports = function(client) {
 	}
 
 	function getKeyFromRedis(ns, key, done) {
+		if (!client.connected) {
+			return done(new Error("Not connected."));
+		}
 		client.get(keyNamespace + ns + ':' + key, function(err, value) {
 			done(err, value && JSON.parse(value));
 		});
 	}
 
 	function writeKeyToRedis(ns, key, value, ttl, done) {
+		if (!client.connected) {
+			return done && done(new Error("Not connected."));
+		}
 		// Node-style errors are not stringifiable in the normal way as they contain circular structures
 		if (value[0] instanceof Error) {
 			value[0] = cleanError(value[0]);
