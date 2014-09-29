@@ -26,7 +26,7 @@ module.exports = function(client) {
 
 	function getKeyFromRedis(ns, key, done) {
 		client.get(keyNamespace + ns + ':' + key, function(err, value) {
-			done(err, JSON.parse(value));
+			done(err, value && JSON.parse(value));
 		});
 	}
 
