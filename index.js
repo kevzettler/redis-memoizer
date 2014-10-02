@@ -1,7 +1,8 @@
 'use strict';
 var redis = require('redis'),
   RedisClient = redis.RedisClient,
-	crypto = require('crypto');
+	crypto = require('crypto'),
+	util = require('util');
 
 module.exports = function(client) {
 	// Support passing in an existing client. If the first arg is not a client, assume that it is
@@ -37,24 +38,17 @@ module.exports = function(client) {
 		if (!client.connected) {
 			return done && done(new Error("Not connected."));
 		}
-		// Node-style errors are not stringifiable in the normal way as they contain circular structures
+		if (ttl === 0) {
+			return process.nextTick(done || function() {});
+		}
 		if (value[0] instanceof Error) {
-			value[0] = cleanError(value[0]);
-		}
-		if(ttl !== 0) {
-			client.setex(keyNamespace + ns + ':' + key, ttl, JSON.stringify(value), done);
+			// Use slower util.inspect() for errors, they have circular references which util.inspect()
+			// can fix but JSON.stringify barfs on
+			value = util.inspect(value);
 		} else {
-			process.nextTick(done || function() {});
+			value = JSON.stringify(value);
 		}
-	}
-
-	function cleanError(err) {
-		var plainObject = {};
-		Object.getOwnPropertyNames(err).forEach(function(key) {
-			if (key[0] === '_') return; // don't save trace, previous, etc
-			plainObject[key] = err[key];
-		});
-		return plainObject;
+		client.setex(keyNamespace + ns + ':' + key, ttl, value, done);
 	}
 
 	return function memoize(fn, ttl) {
