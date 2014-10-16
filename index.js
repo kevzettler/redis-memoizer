@@ -30,7 +30,13 @@ module.exports = function(client) {
 			return done(new Error("Not connected."));
 		}
 		client.get(keyNamespace + ns + ':' + key, function(err, value) {
-			done(err, value && JSON.parse(value));
+			if (err) return done(err);
+			try {
+				if (value) value = JSON.parse(value);
+			} catch(e) {
+				err = e;
+			}
+			done(err, value);
 		});
 	}
 
