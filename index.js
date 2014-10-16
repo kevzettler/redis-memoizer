@@ -35,6 +35,7 @@ module.exports = function(client) {
 				if (value) value = JSON.parse(value);
 			} catch(e) {
 				err = e;
+				value = null;
 			}
 			done(err, value);
 		});
@@ -48,9 +49,8 @@ module.exports = function(client) {
 			return process.nextTick(done || function() {});
 		}
 		if (value[0] instanceof Error) {
-			// Use slower util.inspect() for errors, they have circular references which util.inspect()
-			// can fix but JSON.stringify barfs on
-			value = util.inspect(value);
+			// Seems to do pretty well on errors
+			value = JSON.stringify(value, ["message", "arguments", "type", "name", "stack"]);
 		} else {
 			value = JSON.stringify(value);
 		}
