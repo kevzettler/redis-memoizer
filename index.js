@@ -12,7 +12,7 @@ module.exports = function(client, options) {
 
 	options = options || {};
 	if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
-	if (options.default_ttl	=== undefined) options.default_ttl = 120; // s
+	if (options.default_ttl	=== undefined) options.default_ttl = 120000;
 	
 	// Apply key namespace, if present.
 	var keyNamespace = 'memos:';
@@ -60,7 +60,7 @@ module.exports = function(client, options) {
 		} else {
 			value = JSON.stringify(value);
 		}
-		client.setex(keyNamespace + ns + ':' + key, ttl, value, done);
+		client.psetex(keyNamespace + ns + ':' + key, ttl, value, done);
 	}
 
 	return function memoize(fn, ttl) {
@@ -85,7 +85,7 @@ module.exports = function(client, options) {
 			// Set a timeout on the retrieval from redis.
 			var timeout = setTimeout(function() {
 				onLookup(new Error("Lookup timeout."));
-			}, Math.min(ttlfn() * 1000 /* s to ms */, options.lookup_timeout));
+			}, Math.min(ttlfn(), options.lookup_timeout));
 
 			// Attempt to get the result from redis.
 			getKeyFromRedis(functionKey, argsHash, onLookup);

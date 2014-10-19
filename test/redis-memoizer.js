@@ -99,52 +99,52 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should respect the ttl', function(done) {
-		var fn = function(done) { setTimeout(done, 200); },
-			memoized = memoize(fn, 1);
+		var hits = 0;
+		var fn = function(done) { hits++; done(); },
+			memoized = memoize(fn, 100);
 
-		var start = new Date();
 		memoized(function() {
-			(new Date() - start >= 200).should.be.true;
+			hits.should.equal(1);
 
-			// Call immediately again. Should be a cache hit
-			start = new Date();
-			memoized(function() {
-				(new Date() - start <= 100).should.be.true;
+			// Call within ttl again. Should be a cache hit
+			setTimeout(function() {
+				memoized(function() {
+					hits.should.equal(1);
 
-				// Wait some time, ttl should have expired
-				setTimeout(function() {
-					start = new Date();
-					memoized(function() {
-						(new Date() - start >= 200).should.be.true;
-						clearCache(fn, [], done);
-					});
-				}, 2000);
-			});
+					// Wait some time, ttl should have expired
+					setTimeout(function() {
+						memoized(function() {
+							hits.should.equal(2);
+							clearCache(fn, [], done);
+						});
+					}, 60);
+				});
+			}, 50);
 		});
 	});
 
 	it('should allow ttl to be a function', function(done) {
-		var fn = function(done) { setTimeout(done, 200); },
-			memoized = memoize(fn, function() { return 1; });
+		var hits = 0;
+		var fn = function(done) { hits++; done(); },
+			memoized = memoize(fn, function() { return 100; });
 
-		var start = new Date();
 		memoized(function() {
-			(new Date() - start >= 200).should.be.true;
+			hits.should.equal(1);
 
-			// Call immediately again. Should be a cache hit
-			start = new Date();
-			memoized(function() {
-				(new Date() - start <= 100).should.be.true;
+			// Call within ttl again. Should be a cache hit
+			setTimeout(function() {
+				memoized(function() {
+					hits.should.equal(1);
 
-				// Wait some time, ttl should have expired
-				setTimeout(function() {
-					start = new Date();
-					memoized(function() {
-						(new Date() - start >= 200).should.be.true;
-						clearCache(fn, [], done);
-					});
-				}, 2000);
-			});
+					// Wait some time, ttl should have expired
+					setTimeout(function() {
+						memoized(function() {
+							hits.should.equal(2);
+							clearCache(fn, [], done);
+						});
+					}, 60);
+				});
+			}, 50);
 		});
 	});
 
@@ -158,7 +158,7 @@ describe('redis-memoizer', function() {
 		var callCounter = 0;
 		var memoize = require('../')(redis, {lookup_timeout: 20});
 		var fn = function(done) { callCounter++; done(null, 1); },
-			memoized = memoize(fn, 1);
+			memoized = memoize(fn, 1000);
 
 		var start = new Date();
 

@@ -64,7 +64,7 @@ Creates a memoization function. Requires an existing redis client.
 * `lookup_timeout`: Time to wait for Redis to respond. If it times out, the cache get will be abandoned. Default `1000` (ms).
 										If the TTL fed to `memoize` is shorter than this, it will be used instead.
 
-* `default_ttl`: TTL to use if none is supplied. Defaults to `120` (s).
+* `default_ttl`: TTL to use if none is supplied. Defaults to `120000` (ms).
 
 ### memoize(asyncFunction, [timeout])
 
@@ -72,7 +72,7 @@ Memoizes an async function and returns it.
 
 * `asyncFunction` must be an asynchronous function that needs to be memoized. The last argument that the asyncFunction takes should be a callback in the usual node style.
 
-* `timeout` (Optional) (Default: 120) is the amount of time in seconds for which the result of the function call should be cached in redis. Once the timeout is hit, the value is deleted from redis automatically. This is done using the redis [`setex` command](http://redis.io/commands/setex). The timeout is only set the first time, so the value expires after the timeout time has expired since the first call. The timeout is not reset with every call to the memoized function. Once the value has expired in redis, this module will treat the function call as though it's called the first time again. `timeout` can alternatively be a function, if you want to dynamically determine the cache time based on the data returned. The returned data will be passed into the timeout function.
+* `timeout` (Optional) (Default: 120000 (ms)) is the amount of time in milliseconds for which the result of the function call should be cached in redis. Once the timeout is hit, the value is deleted from redis automatically. This is done using the redis [`psetex` command](http://redis.io/commands/psetex). The timeout is only set the first time, so the value expires after the timeout time has expired since the first call. The timeout is not reset with every call to the memoized function. Once the value has expired in redis, this module will treat the function call as though it's called the first time again. `timeout` can alternatively be a function, if you want to dynamically determine the cache time based on the data returned. The returned data will be passed into the timeout function.
 
 	```javascript
 	var httpCallMemoized = memoize(makeHttpCall, function(res) {
