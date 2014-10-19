@@ -7,7 +7,8 @@ Wikipedia [explains it best](http://en.wikipedia.org/wiki/Memoization):
 > ...memoization is an optimization technique used primarily to speed up computer programs by having function calls avoid repeating the calculation of results for previously processed inputs.
 
 ```javascript
-var memoize = require("redis-memoizer")();
+var redisClient = require('redis').createClient(port, host, options)
+var memoize = require("redis-memoizer")(redisClient);
 
 function someExpensiveOperation(arg1, arg2, done) {
 	// later...
@@ -53,10 +54,17 @@ This can similarly be used for any network or disk bound async calls where you a
 
 ### Initialization
 ```javascript
-var memoize = require("redis-memoizer")(redisPort, redisHost, redisOptions);
+var memoize = require("redis-memoizer")(redisClient, memoizerOptions);
 ```
 
-Initializes the module with redis' connection parameters. The params are passed along as-is to the [node-redis](https://github.com/mranney/node_redis#rediscreateclientport-host-options) module for connecting to redis.
+Creates a memoization function. Requires an existing redis client.
+
+`memoizerOptions` may have the following attributes:
+
+* `lookup_timeout`: Time to wait for Redis to respond. If it times out, the cache get will be abandoned. Default `1000` (ms).
+										If the TTL fed to `memoize` is shorter than this, it will be used instead.
+
+* `default_ttl`: TTL to use if none is supplied. Defaults to `120` (s).
 
 ### memoize(asyncFunction, [timeout])
 

@@ -1,15 +1,17 @@
-var memoize = require('../')(),
-	crypto = require('crypto'),
-	redis = require('redis').createClient(),
-	should = require('should');
+'use strict';
+var crypto = require('crypto');
+var should = require('should');
+var redis = require('redis').createClient();
+var memoize = require('../')(redis);
 
+/*global describe:true, it:true */
 describe('redis-memoizer', function() {
 	function hash(string) {
 		return crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 	}
 
 	function clearCache(fn, args, done) {
-		var stringified = args.map(function(arg) { return JSON.stringify(arg); }).join(",");
+		var stringified = JSON.stringify(args);
 		redis.del('memos:' + hash(fn.toString()) + ':' + hash(stringified), done);
 	}
 
@@ -23,13 +25,13 @@ describe('redis-memoizer', function() {
 		memoized(1, 2, function(val1, val2) {
 			val1.should.equal(1);
 			val2.should.equal(2);
-			(new Date - start1 >= 500).should.be.true;		// First call should go to the function itself
+			(new Date() - start1 >= 500).should.be.true;		// First call should go to the function itself
 
 			var start2 = new Date();
 			memoized(1, 2, function(val1, val2) {
 				val1.should.equal(1);
 				val2.should.equal(2);
-				(new Date - start2 < 500).should.be.true;		// Second call should be faster
+				(new Date() - start2 < 500).should.be.true;		// Second call should be faster
 
 				clearCache(functionToMemoize, [1, 2], done);
 			});
@@ -63,17 +65,17 @@ describe('redis-memoizer', function() {
 		var fn = function(done) { setTimeout(done, 500); },
 			memoized = memoize(fn);
 
-		var start = new Date;
+		var start = new Date();
 
 		memoized(function() {
 			// First one. Should take 500ms
-			(new Date - start >= 500).should.be.true;
+			(new Date() - start >= 500).should.be.true;
 
-			start = new Date;	// Set current time for next callback;
+			start = new Date();	// Set current time for next callback;
 		});
 
 		memoized(function() {
-			(new Date - start <= 10).should.be.true;
+			(new Date() - start <= 10).should.be.true;
 			clearCache(fn, [], done);
 		});
 	});
@@ -88,7 +90,7 @@ describe('redis-memoizer', function() {
 			}, 300);
 		});
 
-		var obj = new Obj;
+		var obj = new Obj();
 
 		obj.y(function(x) {
 			x.should.equal(1);
@@ -100,20 +102,20 @@ describe('redis-memoizer', function() {
 		var fn = function(done) { setTimeout(done, 200); },
 			memoized = memoize(fn, 1);
 
-		var start = new Date;
+		var start = new Date();
 		memoized(function() {
-			(new Date - start >= 200).should.be.true;
+			(new Date() - start >= 200).should.be.true;
 
 			// Call immediately again. Should be a cache hit
-			start = new Date;
+			start = new Date();
 			memoized(function() {
-				(new Date - start <= 100).should.be.true;
+				(new Date() - start <= 100).should.be.true;
 
 				// Wait some time, ttl should have expired
 				setTimeout(function() {
-					start = new Date;
+					start = new Date();
 					memoized(function() {
-						(new Date - start >= 200).should.be.true;
+						(new Date() - start >= 200).should.be.true;
 						clearCache(fn, [], done);
 					});
 				}, 2000);
@@ -125,23 +127,55 @@ describe('redis-memoizer', function() {
 		var fn = function(done) { setTimeout(done, 200); },
 			memoized = memoize(fn, function() { return 1; });
 
-		var start = new Date;
+		var start = new Date();
 		memoized(function() {
-			(new Date - start >= 200).should.be.true;
+			(new Date() - start >= 200).should.be.true;
 
 			// Call immediately again. Should be a cache hit
-			start = new Date;
+			start = new Date();
 			memoized(function() {
-				(new Date - start <= 100).should.be.true;
+				(new Date() - start <= 100).should.be.true;
 
 				// Wait some time, ttl should have expired
 				setTimeout(function() {
-					start = new Date;
+					start = new Date();
 					memoized(function() {
-						(new Date - start >= 200).should.be.true;
+						(new Date() - start >= 200).should.be.true;
 						clearCache(fn, [], done);
 					});
 				}, 2000);
+			});
+		});
+	});
+
+	it('should give up after lookup_timeout', function(done) {
+		// Override redis.get to introduce a delay.
+		var get = redis.get;
+		redis.get = function(key, cb) {
+			setTimeout(cb, 500);
+		};
+
+		var callCounter = 0;
+		var memoize = require('../')(redis, {lookup_timeout: 20});
+		var fn = function(done) { callCounter++; done(null, 1); },
+			memoized = memoize(fn, 1);
+
+		var start = new Date();
+
+		// Call. Should call before redis responds.
+		memoized(function() {
+			(new Date() - start <= 500).should.be.true;
+			callCounter.should.equal(1);
+
+			// Call immediately again. Should not hit cache.
+			start = new Date();
+			memoized(function() {
+				(new Date() - start <= 500).should.be.true;
+				callCounter.should.equal(2);
+
+				// Restore redis.get
+				redis.get = get;
+				clearCache(fn, [], done);
 			});
 		});
 	});
@@ -155,15 +189,15 @@ describe('redis-memoizer', function() {
 
 		var memoized = memoize(fn);
 
-		var start = new Date;
+		var start = new Date();
 		memoized({some: "data"}, function(val1, val2) {
-			(new Date - start >= 500).should.be.true;
+			(new Date() - start >= 500).should.be.true;
 			val1.should.eql({some: "data"});
 			val2.should.eql(["other", "data"]);
 
-			start = new Date;
+			start = new Date();
 			memoized({some: "data"}, function(val1, val2) {
-				(new Date - start <= 100).should.be.true;
+				(new Date() - start <= 100).should.be.true;
 				val1.should.eql({some: "data"});
 				val2.should.eql(["other", "data"]);
 
