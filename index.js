@@ -85,7 +85,7 @@ module.exports = function(client, options) {
 			// Set a timeout on the retrieval from redis.
 			var timeout = setTimeout(function() {
 				onLookup(new Error("Lookup timeout."));
-			}, Math.min(ttlfn(), options.lookup_timeout));
+			}, Math.min(ttlfn() * 1000 /* s to ms */, options.lookup_timeout));
 
 			// Attempt to get the result from redis.
 			getKeyFromRedis(functionKey, argsHash, onLookup);
