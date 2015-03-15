@@ -205,4 +205,36 @@ describe('redis-memoizer', function() {
 			});
 		});
 	});
+
+	it('should restore Date objects, not strings', function(done) {
+		var fn = function(arg1, done) {
+			setTimeout(function() {
+				done(arg1, date2);
+			}, 500);
+		};
+
+		var memoized = memoize(fn);
+		var date1 = new Date("2000-01-01T00:00:00.000Z");
+		var date2 = new Date("2000-01-02T00:00:00.000Z");
+
+		var start = new Date();
+		memoized(date1, function(val1, val2) {
+			(new Date() - start >= 500).should.be.true;
+			val1.should.be.an.instanceOf(Date);
+			val2.should.be.an.instanceOf(Date);
+			val1.should.eql(date1);
+			val2.should.eql(date2);
+
+			start = new Date();
+			memoized(date1, function(val1, val2) {
+				(new Date() - start <= 100).should.be.true;
+				val1.should.be.an.instanceOf(Date);
+				val2.should.be.an.instanceOf(Date);
+				val1.should.eql(date1);
+				val2.should.eql(date2);
+
+				clearCache(fn, [date1], done);
+			});
+		});
+	});
 });

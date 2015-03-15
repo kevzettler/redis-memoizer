@@ -13,7 +13,7 @@ module.exports = function(client, options) {
 	options = options || {};
 	if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
 	if (options.default_ttl	=== undefined) options.default_ttl = 120000;
-	
+
 	// Apply key namespace, if present.
 	var keyNamespace = 'memos:';
 
@@ -33,10 +33,10 @@ module.exports = function(client, options) {
 		}
 		client.get(keyNamespace + ns + ':' + key, function(err, value) {
 			if (err) return done(err);
-			
+
 			// Attempt to parse the result. If that fails, return a parse error instead.
 			try {
-				if (value) value = JSON.parse(value);
+				if (value) value = JSON.parse(value, parseJSONDate);
 			} catch(e) {
 				err = e;
 				value = null;
@@ -44,6 +44,17 @@ module.exports = function(client, options) {
 			done(err, value);
 		});
 	}
+
+
+	// Used as filter function in JSON.parse so it properly restores dates
+	var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
+  function parseJSONDate (key, value) {
+    if (typeof value === 'string') {
+      if (reISO.exec(value))
+        return new Date(value);
+    }
+    return value;
+  }
 
 	function writeKeyToRedis(ns, key, value, ttl, done) {
 		if (!client.connected) {
@@ -100,11 +111,11 @@ module.exports = function(client, options) {
 				// If the value was found in redis, we're done, call back with it.
 				if(value) {
 					done.apply(self, value);
-				} 
+				}
 				// Prevent a cache stampede, queue this result.
 				else if(inFlight[argsHash]) {
 					inFlight[argsHash].push(done);
-				} 
+				}
 				// No other requests in flight, let's call the real function and get the result.
 				else {
 					// Mark this function as in flight.
@@ -116,7 +127,7 @@ module.exports = function(client, options) {
 						// Don't write results that throw a connection error (service interruption);
 						if (!(resultArgs[0] instanceof Error && /ECONNREFUSED/.test(resultArgs[0].message))) {
 							writeKeyToRedis(functionKey, argsHash, resultArgs, ttlfn.apply(null, resultArgs));
-						} 
+						}
 
 						// If the same request was in flight from other sources, resolve them.
 						if(inFlight[argsHash]) {

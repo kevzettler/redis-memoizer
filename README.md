@@ -66,6 +66,9 @@ Creates a memoization function. Requires an existing redis client.
 
 * `default_ttl`: TTL to use if none is supplied. Defaults to `120000` (ms).
 
+* `memoize_key_namespace`: Namespace to use under `memos:` in redis. Useful to e.g. invalidate all cache after
+													 an application update; simply set this to the current git revision or use the boot timestamp.
+
 ### memoize(asyncFunction, [timeout])
 
 Memoizes an async function and returns it.
@@ -89,6 +92,11 @@ This module makes some effort to minimize the effect of a [cache stampede](http:
 Once all the calls have been responded to and the result of the computation is stored in redis, the module then switches to using the computed values from redis.
 
 Note, cache stampedes can still happen if the same function is called from different processes, since the queueing logic described above happens in-memory. For the same set of arguments, you are likely to make as many calls as you have processes.
+
+## Types
+
+Note that this module does serialization to JSON. Special affordances are made for Date objects, which will be correctly returned
+as Dates, but other, more complex types (like Functions) will not survive the serialization/deserialization.
 
 ## Installation
 
