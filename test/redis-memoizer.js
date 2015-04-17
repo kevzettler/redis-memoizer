@@ -237,4 +237,21 @@ describe('redis-memoizer', function() {
 			});
 		});
 	});
+
+	it('should error when not fed a callback', function(done) {
+		var fn = function(arg1, done) {
+			setTimeout(function() {
+				done(null, arg1);
+			}, 0);
+		};
+
+		var memoized = memoize(fn);
+
+		try {
+			memoized('foo');
+		} catch(e) {
+			e.should.be.an.instanceOf(Error);
+			done();
+		}
+	});
 });

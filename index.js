@@ -90,6 +90,10 @@ module.exports = function(client, options) {
 				args = Array.prototype.slice.call(arguments),
 				done = args.pop();
 
+			if (typeof done !== 'function') {
+				throw new Error("Last argument to memoized function must be a callback!");
+			}
+
 			// Hash the args so we can look for this key in redis.
 			var argsHash = hash(JSON.stringify(args));
 
