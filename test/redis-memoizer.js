@@ -2,7 +2,7 @@
 var crypto = require('crypto');
 var should = require('should');
 var redis = require('redis').createClient();
-var memoize = require('../')(redis);
+var memoize = require('../')(redis, {memoize_key_namespace: Date.now()});
 
 /*global describe:true, it:true */
 describe('redis-memoizer', function() {
@@ -21,17 +21,17 @@ describe('redis-memoizer', function() {
 			},
 			memoized = memoize(functionToMemoize);
 
-		var start1 = new Date();
+		var start1 = Date.now();
 		memoized(1, 2, function(val1, val2) {
 			val1.should.equal(1);
 			val2.should.equal(2);
-			(new Date() - start1 >= 500).should.be.true;		// First call should go to the function itself
+			(Date.now() - start1 >= 500).should.be.true;		// First call should go to the function itself
 
-			var start2 = new Date();
+			var start2 = Date.now();
 			memoized(1, 2, function(val1, val2) {
 				val1.should.equal(1);
 				val2.should.equal(2);
-				(new Date() - start2 < 500).should.be.true;		// Second call should be faster
+				(Date.now() - start2 < 500).should.be.true;		// Second call should be faster
 
 				clearCache(functionToMemoize, [1, 2], done);
 			});
@@ -65,17 +65,17 @@ describe('redis-memoizer', function() {
 		var fn = function(done) { setTimeout(done, 500); },
 			memoized = memoize(fn);
 
-		var start = new Date();
+		var start = Date.now();
 
 		memoized(function() {
 			// First one. Should take 500ms
-			(new Date() - start >= 500).should.be.true;
+			(Date.now() - start >= 500).should.be.true;
 
-			start = new Date();	// Set current time for next callback;
+			start = Date.now();	// Set current time for next callback;
 		});
 
 		memoized(function() {
-			(new Date() - start <= 10).should.be.true;
+			(Date.now() - start <= 10).should.be.true;
 			clearCache(fn, [], done);
 		});
 	});
@@ -100,7 +100,7 @@ describe('redis-memoizer', function() {
 
 	it('should respect the ttl', function(done) {
 		var hits = 0;
-		var fn = function(done) { hits++; done(); },
+		var fn = function respectTTL(done) { hits++; done(); },
 			memoized = memoize(fn, 100);
 
 		memoized(function() {
@@ -125,10 +125,11 @@ describe('redis-memoizer', function() {
 
 	it('should allow ttl to be a function', function(done) {
 		var hits = 0;
-		var fn = function(done) { hits++; done(); },
+		var fn = function ttlFunction(done) { hits++; done(); },
 			memoized = memoize(fn, function() { return 100; });
 
-		memoized(function() {
+		memoized(function(err, result) {
+			console.log(arguments);
 			hits.should.equal(1);
 
 			// Call within ttl again. Should be a cache hit
@@ -160,17 +161,17 @@ describe('redis-memoizer', function() {
 		var fn = function(done) { callCounter++; done(null, 1); },
 			memoized = memoize(fn, 1000);
 
-		var start = new Date();
+		var start = Date.now();
 
 		// Call. Should call before redis responds.
 		memoized(function() {
-			(new Date() - start <= 500).should.be.true;
+			(Date.now() - start <= 500).should.be.true;
 			callCounter.should.equal(1);
 
 			// Call immediately again. Should not hit cache.
-			start = new Date();
+			start = Date.now();
 			memoized(function() {
-				(new Date() - start <= 500).should.be.true;
+				(Date.now() - start <= 500).should.be.true;
 				callCounter.should.equal(2);
 
 				// Restore redis.get
@@ -189,15 +190,15 @@ describe('redis-memoizer', function() {
 
 		var memoized = memoize(fn);
 
-		var start = new Date();
+		var start = Date.now();
 		memoized({some: "data"}, function(val1, val2) {
-			(new Date() - start >= 500).should.be.true;
+			(Date.now() - start >= 500).should.be.true;
 			val1.should.eql({some: "data"});
 			val2.should.eql(["other", "data"]);
 
-			start = new Date();
+			start = Date.now();
 			memoized({some: "data"}, function(val1, val2) {
-				(new Date() - start <= 100).should.be.true;
+				(Date.now() - start <= 100).should.be.true;
 				val1.should.eql({some: "data"});
 				val2.should.eql(["other", "data"]);
 
@@ -217,17 +218,17 @@ describe('redis-memoizer', function() {
 		var date1 = new Date("2000-01-01T00:00:00.000Z");
 		var date2 = new Date("2000-01-02T00:00:00.000Z");
 
-		var start = new Date();
+		var start = Date.now();
 		memoized(date1, function(val1, val2) {
-			(new Date() - start >= 500).should.be.true;
+			(Date.now() - start >= 500).should.be.true;
 			val1.should.be.an.instanceOf(Date);
 			val2.should.be.an.instanceOf(Date);
 			val1.should.eql(date1);
 			val2.should.eql(date2);
 
-			start = new Date();
+			start = Date.now();
 			memoized(date1, function(val1, val2) {
-				(new Date() - start <= 100).should.be.true;
+				(Date.now() - start <= 100).should.be.true;
 				val1.should.be.an.instanceOf(Date);
 				val2.should.be.an.instanceOf(Date);
 				val1.should.eql(date1);
