@@ -26,7 +26,7 @@ module.exports = function createMemoizeFunction(client, options) {
 };
 
 function memoizeFn(client, options, keyNamespace, fn, ttl) {
-  var functionKey = hash(fn.toString()),
+  var functionKey = hash(fn.toString() + fn._name),
     inFlight = {},
     ttlfn;
 
