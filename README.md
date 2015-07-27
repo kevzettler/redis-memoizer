@@ -98,6 +98,12 @@ Note, cache stampedes can still happen if the same function is called from diffe
 Note that this module does serialization to JSON. Special affordances are made for Date objects, which will be correctly returned
 as Dates, but other, more complex types (like Functions) will not survive the serialization/deserialization.
 
+## Quirks
+
+If you're wrapping a function that you're going to memoize (say, in a promise to callback wrapper),
+you will need to set the `_name` property on the function to ensure it is properly memoized. Otherwise,
+redis-memoizer will be unable to tell the difference between them.
+
 ## Installation
 
 Use npm to install redis-memoizer:
