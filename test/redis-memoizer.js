@@ -255,4 +255,29 @@ describe('redis-memoizer', function() {
 			done();
 		}
 	});
+
+	it('should not memoize two identical-looking functions to the same key', function(done) {
+		var funcA = (function() {
+			var a = 10;
+			return function(cb) {
+				return cb(a);
+			};
+		})();
+		var funcB = (function() {
+			var a = 20;
+			return function(cb) {
+				return cb(a);
+			};
+		})();
+
+		var memoizedA = memoize(funcA);
+		var memoizedB = memoize(funcB);
+		memoizedA(function(result) {
+			result.should.eql(10);
+			memoizedB(function(result2) {
+				result2.should.eql(20);
+				done();
+			});
+		});
+	});
 });

@@ -26,7 +26,11 @@ module.exports = function createMemoizeFunction(client, options) {
 };
 
 function memoizeFn(client, options, keyNamespace, fn, ttl) {
-  var functionKey = hash(fn.toString() + fn._name),
+  // We need to just uniquely identify this function, no way in hell are we going to try
+  // to make different memoize calls of the same function actually match up (and save the key).
+  // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
+  // yet be very different. This guid() seems to do the trick.
+  var functionKey = hash(fn.toString() + guid()),
     inFlight = {},
     ttlfn;
 
@@ -96,6 +100,16 @@ function memoizeFn(client, options, keyNamespace, fn, ttl) {
       }
     }
   };
+}
+
+function guid() {
+  function s4() {
+    return Math.floor((1 + Math.random()) * 0x10000)
+      .toString(16)
+      .substring(1);
+  }
+  return s4() + s4() + '-' + s4() + '-' + s4() + '-' +
+    s4() + '-' + s4() + s4() + s4();
 }
 
 function hash(string) {
