@@ -40,9 +40,13 @@ function memoizeFn(client, options, keyNamespace, fn, ttl) {
     ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
   }
   return function memoizedFunction() {
-    var self = this,  // if 'this' is used in the function
-      args = Array.prototype.slice.call(arguments),
-      done = args.pop();
+    var self = this;  // if 'this' is used in the function
+
+    var args = new Array(arguments.length);
+    for (var i = 0; i < args.length; i++) {
+      args[i] = arguments[i];
+    }
+    var done = args.pop();
 
     if (typeof done !== 'function') {
       throw new Error('Redis-Memoizer: Last argument to memoized function must be a callback!');
@@ -82,7 +86,10 @@ function memoizeFn(client, options, keyNamespace, fn, ttl) {
         inFlight[argsHash] = [done];
 
         fn.apply(self, args.concat(function() {
-          var resultArgs = Array.prototype.slice.call(arguments);
+          var resultArgs = new Array(arguments.length);
+          for (var i = 0; i < resultArgs.length; i++) {
+            resultArgs[i] = arguments[i];
+          }
 
           // Don't write results that throw a connection error (service interruption);
           if (!(resultArgs[0] instanceof Error && /ECONNREFUSED/.test(resultArgs[0].message))) {
@@ -94,7 +101,9 @@ function memoizeFn(client, options, keyNamespace, fn, ttl) {
             inFlight[argsHash].forEach(function(cb) {
               cb.apply(self, resultArgs);
             });
-            delete inFlight[argsHash];
+            // Rather than use delete set null here so inFlight doesn't become a slow obj.
+            // TODO figure out if this leaks enough memory to matter
+            inFlight[argsHash] = null;
           }
         }));
       }
