@@ -12,6 +12,7 @@ module.exports = function createMemoizeFunction(client, options) {
   options = options || {};
   if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
   if (options.default_ttl === undefined) options.default_ttl = 120000;
+  if (options.time_label_prefix === undefined) options.time_label_prefix = '';
 
   // Apply key namespace, if present.
   var keyNamespace = 'memos:';
@@ -25,7 +26,7 @@ module.exports = function createMemoizeFunction(client, options) {
   return memoizeFn.bind(null, client, options, keyNamespace);
 };
 
-function memoizeFn(client, options, keyNamespace, fn, ttl) {
+function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   // We need to just uniquely identify this function, no way in hell are we going to try
   // to make different memoize calls of the same function actually match up (and save the key).
   // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
@@ -85,11 +86,14 @@ function memoizeFn(client, options, keyNamespace, fn, ttl) {
         // Mark this function as in flight.
         inFlight[argsHash] = [done];
 
+        if (timeLabel) console.time(options.time_label_prefix + timeLabel);
+
         fn.apply(self, args.concat(function() {
           var resultArgs = new Array(arguments.length);
           for (var i = 0; i < resultArgs.length; i++) {
             resultArgs[i] = arguments[i];
           }
+          if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
 
           // Don't write results that throw a connection error (service interruption);
           if (!(resultArgs[0] instanceof Error && /ECONNREFUSED/.test(resultArgs[0].message))) {
