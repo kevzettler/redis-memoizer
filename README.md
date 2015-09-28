@@ -54,7 +54,16 @@ This can similarly be used for any network or disk bound async calls where you a
 
 ### Initialization
 ```javascript
-var memoize = require("redis-memoizer")(redisClient, memoizerOptions);
+// Example configuration:
+var memoize = require("redis-memoizer")(redisClient, {
+	lookup_timeout: 500, // fast network
+	default_ttl: 60 * 1000,
+	memoize_key_namespace: require('./package.json').version,
+	// Don't memoize server errors.
+	memoize_errors_when: function(e) {
+	  return !e.code || e.code < 500;
+	}
+});
 ```
 
 Creates a memoization function. Requires an existing redis client.
