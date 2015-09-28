@@ -69,6 +69,9 @@ Creates a memoization function. Requires an existing redis client.
 * `memoize_key_namespace`: Namespace to use under `memos:` in redis. Useful to e.g. invalidate all cache after
 													 an application update; simply set this to the current git revision or use the boot timestamp.
 
+* `memoize_errors_when`: A function that receives a parameter (`err`) and returns a boolean. If true, the error will be memoized.
+                         By default, all errors are memoized.
+
 ### memoize(asyncFunction, [timeout])
 
 Memoizes an async function and returns it.

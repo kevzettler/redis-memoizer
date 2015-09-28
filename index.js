@@ -13,6 +13,8 @@ module.exports = function createMemoizeFunction(client, options) {
   if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
   if (options.default_ttl === undefined) options.default_ttl = 120000;
   if (options.time_label_prefix === undefined) options.time_label_prefix = '';
+  // Set to a function that determines whether or not to memoize an error.
+  if (options.memoize_errors_when === undefined) options.memoize_errors_when = function(err) {return true;};
 
   // Apply key namespace, if present.
   var keyNamespace = 'memos:';
@@ -96,7 +98,7 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
           if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
 
           // Don't write results that throw a connection error (service interruption);
-          if (!(resultArgs[0] instanceof Error && /ECONNREFUSED/.test(resultArgs[0].message))) {
+          if (!(resultArgs[0] instanceof Error) || options.memoize_errors_when(resultArgs[0])) {
             writeKeyToRedis(client, keyNamespace, functionKey, argsHash, resultArgs, ttlfn.apply(null, resultArgs));
           }
 
@@ -138,7 +140,7 @@ function getKeyFromRedis(client, keyNamespace, ns, key, done) {
 
     // Attempt to parse the result. If that fails, return a parse error instead.
     try {
-      if (value) value = JSON.parse(value, parseJSONDate);
+      if (value) value = JSON.parse(value, reviver);
     } catch(e) {
       err = e;
       value = null;
@@ -150,9 +152,19 @@ function getKeyFromRedis(client, keyNamespace, ns, key, done) {
 
 // Used as filter function in JSON.parse so it properly restores dates
 var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
-function parseJSONDate (key, value) {
+function reviver (key, value) {
+  // Revive dates
   if (typeof value === 'string' && reISO.exec(value)) {
     return new Date(value);
+  }
+  // Revive errors
+  else if (value && value.$__memoized_error) {
+    var err = new Error(value.message);
+    err.stack = value.stack;
+    err.name = value.name;
+    err.type = value.type;
+    err.arguments = value.arguments;
+    return err;
   }
   return value;
 }
@@ -167,8 +179,10 @@ function writeKeyToRedis(client, keyNamespace, ns, key, value, ttl, done) {
   }
   // If the value was an error, we need to do some herky-jerky stringifying.
   if (value[0] instanceof Error) {
+    // Mark errors so we can revive them
+    value[0].$__memoized_error = true;
     // Seems to do pretty well on errors
-    value = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack']);
+    value = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', '$__memoized_error']);
   } else {
     value = JSON.stringify(value);
   }

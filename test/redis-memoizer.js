@@ -39,8 +39,8 @@ describe('redis-memoizer', function() {
 	});
 
 	it("should memoize separate function separately", function(done) {
-		var function1 = function(arg, done) { setTimeout(function() { done(1); }, 200); },
-			function2 = function(arg, done) { setTimeout(function() { done(2); }, 200); };
+		var function1 = function(arg, done) { setTimeout(function() { done(1); }, 0); },
+			function2 = function(arg, done) { setTimeout(function() { done(2); }, 0); };
 
 		var memoizedFn1 = memoize(function1),
 			memoizedFn2 = memoize(function2);
@@ -254,6 +254,65 @@ describe('redis-memoizer', function() {
 			e.should.be.an.instanceOf(Error);
 			done();
 		}
+	});
+
+	it('should memoize errors', function(done) {
+		var hits = 0;
+		var fn = function errorFunction(done) {
+			hits++;
+			if (hits === 1) done(new Error('Hit Error!'));
+			else done();
+		};
+
+		var memoized = memoize(fn, 1000);
+		memoized(function(e) {
+			e.should.be.an.instanceOf(Error);
+			e.message.should.eql('Hit Error!');
+			memoized(function(e) {
+				e.should.be.an.instanceOf(Error);
+				e.message.should.eql('Hit Error!');
+				done();
+			});
+		});
+	});
+
+	it('should not memoize errors that are filtered out', function(done) {
+		var hits = 0;
+		var fn = function errorFunction(done) {
+			hits++;
+			if (hits === 1) done(new Error('Hit Error!'));
+			else if (hits === 2) done(new Error('Special Error!'));
+			else done(null, hits);
+		};
+
+		var do_memoize = require('../')(redis, {
+			memoize_key_namespace: Date.now(),
+			memoize_errors_when: function(err) {
+				return err.message !== 'Hit Error!';
+			}
+		});
+
+		// First error won't be memoized, so expect hits to increment on subsequent calls.
+		// Second error will, so hits will freeze there.
+		var memoized = do_memoize(fn, 1000);
+		memoized(function(e) {
+			e.should.be.an.instanceOf(Error);
+			e.message.should.eql('Hit Error!');
+			hits.should.eql(1);
+			memoized(function(e, result) {
+				should.not.exist(result);
+				e.should.be.an.instanceOf(Error);
+				e.message.should.eql('Special Error!');
+				hits.should.eql(2);
+				memoized(function(e, result) {
+					should.not.exist(result);
+					e.should.be.an.instanceOf(Error);
+					e.message.should.eql('Special Error!');
+					hits.should.eql(2);
+					done();
+				});
+			});
+		});
 	});
 
 	it('should not memoize two identical-looking functions to the same key', function(done) {
