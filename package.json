@@ -18,7 +18,7 @@
   "dependencies": {},
   "devDependencies": {
     "mocha": "~1.8.1",
-    "redis": "~0.12.1",
+    "redis": "~2.3.0",
     "should": "~1.2.1"
   }
 }

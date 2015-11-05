@@ -5,7 +5,7 @@ var redis = require('redis'),
 module.exports = function createMemoizeFunction(client, options) {
   // Support passing in an existing client. If the first arg is not a client, assume that it is
   // connection parameters.
-  if (!(client && client.connectionOption)) {
+  if (!client || !(client instanceof redis.RedisClient)) {
     client = redis.createClient.apply(null, arguments);
   }
 
