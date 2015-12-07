@@ -1,15 +1,24 @@
 'use strict';
 var redis = require('redis'),
-  crypto = require('crypto');
+  crypto = require('crypto'),
+  zlib = require('zlib');
+
+var GZIP_MAGIC = new Buffer('$gzip__');
+var GZIP_MAGIC_LENGTH = Buffer.byteLength(GZIP_MAGIC);
 
 module.exports = function createMemoizeFunction(client, options) {
+  options = options || {};
+  options.return_buffers = true;
   // Support passing in an existing client. If the first arg is not a client, assume that it is
   // connection parameters.
   if (!client || !(client instanceof redis.RedisClient)) {
     client = redis.createClient.apply(null, arguments);
   }
 
-  options = options || {};
+  if (!client.options.return_buffers) {
+    throw new Error("A redis client passed to the memoizer must have the option `return_buffers` set to true.");
+  }
+
   if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
   if (options.default_ttl === undefined) options.default_ttl = 120000;
   if (options.time_label_prefix === undefined) options.time_label_prefix = '';
@@ -17,12 +26,11 @@ module.exports = function createMemoizeFunction(client, options) {
   if (options.memoize_errors_when === undefined) options.memoize_errors_when = function(err) {return true;};
 
   // Apply key namespace, if present.
-  var keyNamespace = 'memos:';
+  var keyNamespace = 'memos';
 
   // Allow custom namespaces, e.g. by git revision.
   if (options.memoize_key_namespace) {
-    keyNamespace += options.memoize_key_namespace;
-    if (keyNamespace.slice(-1) !== ':') keyNamespace += ':';
+    keyNamespace += ':' + options.memoize_key_namespace;
   }
 
   return memoizeFn.bind(null, client, options, keyNamespace);
@@ -42,7 +50,7 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   } else {
     ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
   }
-  return function memoizedFunction() {
+  var out = function memoizedFunction() {
     var self = this;  // if 'this' is used in the function
 
     var args = new Array(arguments.length);
@@ -115,6 +123,8 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
       }
     }
   };
+  out.memoize_key = functionKey;
+  return out;
 }
 
 function guid() {
@@ -130,25 +140,6 @@ function guid() {
 function hash(string) {
   return crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 }
-
-function getKeyFromRedis(client, keyNamespace, ns, key, done) {
-  if (!client.connected) {
-    return done(new Error('Redis-Memoizer: Not connected.'));
-  }
-  client.get(keyNamespace + ns + ':' + key, function(err, value) {
-    if (err) return done(err);
-
-    // Attempt to parse the result. If that fails, return a parse error instead.
-    try {
-      if (value) value = JSON.parse(value, reviver);
-    } catch(e) {
-      err = e;
-      value = null;
-    }
-    done(err, value);
-  });
-}
-
 
 // Used as filter function in JSON.parse so it properly restores dates
 var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
@@ -169,7 +160,25 @@ function reviver (key, value) {
   return value;
 }
 
-function writeKeyToRedis(client, keyNamespace, ns, key, value, ttl, done) {
+function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
+  if (!client.connected) {
+    return done(new Error('Redis-Memoizer: Not connected.'));
+  }
+  compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'), function(err, value) {
+    if (err) return done(err);
+
+    // Attempt to parse the result. If that fails, return a parse error instead.
+    try {
+      if (value) value = JSON.parse(value, reviver);
+    } catch(e) {
+      err = e;
+      value = null;
+    }
+    done(err, value);
+  });
+}
+
+function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl, done) {
   if (!client.connected) {
     return done && done(new Error('Redis-Memoizer: Not connected.'));
   }
@@ -186,5 +195,51 @@ function writeKeyToRedis(client, keyNamespace, ns, key, value, ttl, done) {
   } else {
     value = JSON.stringify(value);
   }
-  client.psetex(keyNamespace + ns + ':' + key, ttl, value, done);
+  compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, value, done);
+}
+
+function compressedGet(client, key, cb) {
+  client.get(new Buffer(key), function(err, zippedVal) {
+    if (err) return cb(err);
+    gunzip(zippedVal, function(err, retVal) {
+      if (err) return cb(err);
+      cb(null, retVal);
+    });
+  });
+}
+
+function compressedPSetX(client, key, ttl, value, cb) {
+  gzip(value, function(err, zippedVal) {
+    if (err) return cb(err);
+    client.psetex(new Buffer(key), ttl, zippedVal, function(err, retVal) {
+      if (err && cb) return cb(err);
+      cb && cb(null, retVal);
+    });
+  });
+}
+
+function gzip(value, cb) {
+  if (value == null) return cb(null, value);
+  // Too small to effectively gzip
+  if (value.length < 500) return cb(null, value);
+  if (process.env.NODE_ENV === 'test') {
+    // Race condition otherwise in testing between setting keys and retrieving them
+    var zippedVal = zlib.gzipSync(value);
+    cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], Buffer.byteLength(zippedVal) + GZIP_MAGIC_LENGTH));
+  } else {
+    zlib.gzip(value, function(err, zippedVal) {
+      if (err) return cb(err);
+      cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], Buffer.byteLength(zippedVal) + GZIP_MAGIC_LENGTH));
+    });
+  }
+}
+
+function gunzip(value, cb) {
+  if (value == null) return cb(null, value);
+  // Check for GZIP MAGIC, if there unzip it.
+  if (value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
+    zlib.gunzip(value.slice(GZIP_MAGIC_LENGTH), cb);
+  } else {
+    cb(null, value);
+  }
 }

@@ -1,8 +1,9 @@
 'use strict';
 var crypto = require('crypto');
 var should = require('should');
-var redis = require('redis').createClient();
-var memoize = require('../')(redis, {memoize_key_namespace: Date.now()});
+var redis = require('redis').createClient({return_buffers: true});
+var key_namespace = Date.now();
+var memoize = require('../')(redis, {memoize_key_namespace: key_namespace});
 
 /*global describe:true, it:true */
 describe('redis-memoizer', function() {
@@ -12,7 +13,7 @@ describe('redis-memoizer', function() {
 
 	function clearCache(fn, args, done) {
 		var stringified = JSON.stringify(args);
-		redis.del('memos:' + hash(fn.toString()) + ':' + hash(stringified), done);
+		redis.del(['memos', key_namespace, fn.memoize_key, hash(stringified)].join(':'), done);
 	}
 
 	it('should memoize a value correctly', function(done) {
