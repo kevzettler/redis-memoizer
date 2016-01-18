@@ -4,7 +4,7 @@ var redis = require('redis'),
   zlib = require('zlib');
 
 var GZIP_MAGIC = new Buffer('$gzip__');
-var GZIP_MAGIC_LENGTH = Buffer.byteLength(GZIP_MAGIC);
+var GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
 
 module.exports = function createMemoizeFunction(client, options) {
   options = options || {};
@@ -225,11 +225,11 @@ function gzip(value, cb) {
   if (process.env.NODE_ENV === 'test') {
     // Race condition otherwise in testing between setting keys and retrieving them
     var zippedVal = zlib.gzipSync(value);
-    cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], Buffer.byteLength(zippedVal) + GZIP_MAGIC_LENGTH));
+    cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
   } else {
     zlib.gzip(value, function(err, zippedVal) {
       if (err) return cb(err);
-      cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], Buffer.byteLength(zippedVal) + GZIP_MAGIC_LENGTH));
+      cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
     });
   }
 }
