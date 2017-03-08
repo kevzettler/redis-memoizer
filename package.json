@@ -1,6 +1,6 @@
 {
   "name": "redis-memoizer",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "A memoizer using redis as a shared cache, with TTL.",
   "engines": {
     "node": ">=4"
