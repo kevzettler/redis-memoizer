@@ -1,18 +1,19 @@
 'use strict';
-var redis = require('redis'),
-  crypto = require('crypto'),
-  zlib = require('zlib');
+const redis = require('redis');
+const crypto = require('crypto');
+const uuid = require('node-uuid');
+const zlib = require('zlib');
 
-var GZIP_MAGIC = new Buffer('$gzip__');
-var GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
+const GZIP_MAGIC = new Buffer('$gzip__');
+const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
 
 module.exports = function createMemoizeFunction(client, options) {
   options = options || {};
   options.return_buffers = true;
   // Support passing in an existing client. If the first arg is not a client, assume that it is
   // connection parameters.
-  if (!client || !(client instanceof redis.RedisClient)) {
-    client = redis.createClient.apply(null, arguments);
+  if (!client || !(client.constructor && client.constructor.name === 'RedisClient')) {
+    client = redis.createClient.apply(redis, arguments);
   }
 
   if (!client.options.return_buffers) {
@@ -26,7 +27,7 @@ module.exports = function createMemoizeFunction(client, options) {
   if (options.memoize_errors_when === undefined) options.memoize_errors_when = function(err) {return true;};
 
   // Apply key namespace, if present.
-  var keyNamespace = 'memos';
+  let keyNamespace = 'memos';
 
   // Allow custom namespaces, e.g. by git revision.
   if (options.memoize_key_namespace) {
@@ -41,33 +42,33 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   // to make different memoize calls of the same function actually match up (and save the key).
   // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
   // yet be very different. This guid() seems to do the trick.
-  var functionKey = hash(fn.toString() + guid()),
-    inFlight = {},
-    ttlfn;
+  let functionKey = uuid.v4();
+  let inFlight = {};
+  let ttlfn;
 
   if(typeof ttl === 'function') {
     ttlfn = ttl;
   } else {
     ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
   }
-  var out = function memoizedFunction() {
-    var self = this;  // if 'this' is used in the function
+  const out = function memoizedFunction() {
+    const self = this;  // if 'this' is used in the function
 
-    var args = new Array(arguments.length);
-    for (var i = 0; i < args.length; i++) {
+    const args = new Array(arguments.length);
+    for (let i = 0; i < args.length; i++) {
       args[i] = arguments[i];
     }
-    var done = args.pop();
+    const done = args.pop();
 
     if (typeof done !== 'function') {
       throw new Error('Redis-Memoizer: Last argument to memoized function must be a callback!');
     }
 
     // Hash the args so we can look for this key in redis.
-    var argsHash = hash(JSON.stringify(args));
+    const argsHash = hash(JSON.stringify(args));
 
     // Set a timeout on the retrieval from redis.
-    var timeout = setTimeout(function() {
+    let timeout = setTimeout(function() {
       onLookup(new Error('Redis-Memoizer: Lookup timeout.'));
     }, Math.min(ttlfn(), options.lookup_timeout));
 
@@ -75,21 +76,20 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
     getKeyFromRedis(client, keyNamespace, functionKey, argsHash, onLookup);
 
     function onLookup(err, value) {
-
       // Don't run twice.
       if (!timeout) return;
       // Clear pending timeout if it hasn't been already, and null it.
       clearTimeout(timeout);
       timeout = null;
 
-      if (err && process.env.NODE_ENV !== 'production') console.error(err);
+      if (err && process.env.NODE_ENV !== 'production') console.error(err.message);
       // If the value was found in redis, we're done, call back with it.
       if (value) {
-        done.apply(self, value);
+        return done.apply(self, value);
       }
       // Prevent a cache stampede, queue this result.
       else if (inFlight[argsHash]) {
-        inFlight[argsHash].push(done);
+        return inFlight[argsHash].push(done);
       }
       // No other requests in flight, let's call the real function and get the result.
       else {
@@ -99,8 +99,8 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
         if (timeLabel) console.time(options.time_label_prefix + timeLabel);
 
         fn.apply(self, args.concat(function() {
-          var resultArgs = new Array(arguments.length);
-          for (var i = 0; i < resultArgs.length; i++) {
+          const resultArgs = new Array(arguments.length);
+          for (let i = 0; i < resultArgs.length; i++) {
             resultArgs[i] = arguments[i];
           }
           if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
@@ -127,18 +127,8 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   return out;
 }
 
-function guid() {
-  function s4() {
-    return Math.floor((1 + Math.random()) * 0x10000)
-      .toString(16)
-      .substring(1);
-  }
-  return s4() + s4() + '-' + s4() + '-' + s4() + '-' +
-    s4() + '-' + s4() + s4() + s4();
-}
-
 function hash(string) {
-  return crypto.createHmac('sha1', 'memo').update(string).digest('hex');
+  return crypto.createHash('sha1').update(string).digest('hex');
 }
 
 // Used as filter function in JSON.parse so it properly restores dates
@@ -161,6 +151,7 @@ function reviver (key, value) {
 }
 
 function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
+  // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
   if (!client.connected) {
     return done(new Error('Redis-Memoizer: Not connected.'));
   }
@@ -224,7 +215,7 @@ function gzip(value, cb) {
   if (value.length < 500) return cb(null, value);
   if (process.env.NODE_ENV === 'test') {
     // Race condition otherwise in testing between setting keys and retrieving them
-    var zippedVal = zlib.gzipSync(value);
+    const zippedVal = zlib.gzipSync(value);
     cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
   } else {
     zlib.gzip(value, function(err, zippedVal) {

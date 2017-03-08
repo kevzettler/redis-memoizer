@@ -1,34 +1,34 @@
 'use strict';
-var crypto = require('crypto');
-var should = require('should');
-var redis = require('redis').createClient({return_buffers: true});
-var key_namespace = Date.now();
-var memoize = require('../')(redis, {memoize_key_namespace: key_namespace});
+const crypto = require('crypto');
+const should = require('should');
+const redis = require('redis').createClient({return_buffers: true});
+const key_namespace = Date.now();
+const memoize = require('../')(redis, {memoize_key_namespace: key_namespace});
 
 /*global describe:true, it:true */
 describe('redis-memoizer', function() {
 	function hash(string) {
-		return crypto.createHmac('sha1', 'memo').update(string).digest('hex');
+		return crypto.createHash('sha1').update(string).digest('hex');
 	}
 
 	function clearCache(fn, args, done) {
-		var stringified = JSON.stringify(args);
+		const stringified = JSON.stringify(args);
 		redis.del(['memos', key_namespace, fn.memoize_key, hash(stringified)].join(':'), done);
 	}
 
 	it('should memoize a value correctly', function(done) {
-		var functionToMemoize = function (val1, val2, done) {
+		const functionToMemoize = function (val1, val2, done) {
 				setTimeout(function() { done(val1, val2); }, 500);
 			},
 			memoized = memoize(functionToMemoize);
 
-		var start1 = Date.now();
+		const start1 = Date.now();
 		memoized(1, 2, function(val1, val2) {
 			val1.should.equal(1);
 			val2.should.equal(2);
 			(Date.now() - start1 >= 500).should.be.true;		// First call should go to the function itself
 
-			var start2 = Date.now();
+			const start2 = Date.now();
 			memoized(1, 2, function(val1, val2) {
 				val1.should.equal(1);
 				val2.should.equal(2);
@@ -40,10 +40,10 @@ describe('redis-memoizer', function() {
 	});
 
 	it("should memoize separate function separately", function(done) {
-		var function1 = function(arg, done) { setTimeout(function() { done(1); }, 0); },
+		const function1 = function(arg, done) { setTimeout(function() { done(1); }, 0); },
 			function2 = function(arg, done) { setTimeout(function() { done(2); }, 0); };
 
-		var memoizedFn1 = memoize(function1),
+		const memoizedFn1 = memoize(function1),
 			memoizedFn2 = memoize(function2);
 
 		memoizedFn1("x", function(val) {
@@ -63,10 +63,10 @@ describe('redis-memoizer', function() {
 	});
 
 	it("should prevent a cache stampede", function(done) {
-		var fn = function(done) { setTimeout(done, 500); },
+		const fn = function(done) { setTimeout(done, 500); },
 			memoized = memoize(fn);
 
-		var start = Date.now();
+		let start = Date.now();
 
 		memoized(function() {
 			// First one. Should take 500ms
@@ -84,14 +84,14 @@ describe('redis-memoizer', function() {
 	it('should respect \'this\'', function(done) {
 		function Obj() { this.x = 1; }
 		Obj.prototype.y = memoize(function(done) {
-			var self = this;
+			const self = this;
 
 			setTimeout(function() {
 				done(self.x);
 			}, 300);
 		});
 
-		var obj = new Obj();
+		const obj = new Obj();
 
 		obj.y(function(x) {
 			x.should.equal(1);
@@ -100,8 +100,8 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should respect the ttl', function(done) {
-		var hits = 0;
-		var fn = function respectTTL(done) { hits++; done(); },
+		let hits = 0;
+		const fn = function respectTTL(done) { hits++; done(); },
 			memoized = memoize(fn, 100);
 
 		memoized(function() {
@@ -125,12 +125,11 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should allow ttl to be a function', function(done) {
-		var hits = 0;
-		var fn = function ttlFunction(done) { hits++; done(); },
+		let hits = 0;
+		const fn = function ttlFunction(done) { hits++; done(); },
 			memoized = memoize(fn, function() { return 100; });
 
 		memoized(function(err, result) {
-			console.log(arguments);
 			hits.should.equal(1);
 
 			// Call within ttl again. Should be a cache hit
@@ -152,17 +151,17 @@ describe('redis-memoizer', function() {
 
 	it('should give up after lookup_timeout', function(done) {
 		// Override redis.get to introduce a delay.
-		var get = redis.get;
+		const get = redis.get;
 		redis.get = function(key, cb) {
 			setTimeout(cb, 500);
 		};
 
-		var callCounter = 0;
-		var memoize = require('../')(redis, {lookup_timeout: 20});
-		var fn = function(done) { callCounter++; done(null, 1); },
+		let callCounter = 0;
+		const memoize = require('../')(redis, {lookup_timeout: 20});
+		const fn = function(done) { callCounter++; done(null, 1); },
 			memoized = memoize(fn, 1000);
 
-		var start = Date.now();
+		let start = Date.now();
 
 		// Call. Should call before redis responds.
 		memoized(function() {
@@ -183,15 +182,15 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should work if complex types are accepted as args and returned', function(done) {
-		var fn = function(arg1, done) {
+		const fn = function(arg1, done) {
 			setTimeout(function() {
 				done(arg1, ["other", "data"]);
 			}, 500);
 		};
 
-		var memoized = memoize(fn);
+		const memoized = memoize(fn);
 
-		var start = Date.now();
+		let start = Date.now();
 		memoized({some: "data"}, function(val1, val2) {
 			(Date.now() - start >= 500).should.be.true;
 			val1.should.eql({some: "data"});
@@ -209,17 +208,17 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should restore Date objects, not strings', function(done) {
-		var fn = function(arg1, done) {
+		const date1 = new Date("2000-01-01T00:00:00.000Z");
+		const date2 = new Date("2000-01-02T00:00:00.000Z");
+
+		const fn = function(arg1, done) {
 			setTimeout(function() {
 				done(arg1, date2);
 			}, 500);
 		};
+		const memoized = memoize(fn);
 
-		var memoized = memoize(fn);
-		var date1 = new Date("2000-01-01T00:00:00.000Z");
-		var date2 = new Date("2000-01-02T00:00:00.000Z");
-
-		var start = Date.now();
+		let start = Date.now();
 		memoized(date1, function(val1, val2) {
 			(Date.now() - start >= 500).should.be.true;
 			val1.should.be.an.instanceOf(Date);
@@ -241,13 +240,13 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should error when not fed a callback', function(done) {
-		var fn = function(arg1, done) {
+		const fn = function(arg1, done) {
 			setTimeout(function() {
 				done(null, arg1);
 			}, 0);
 		};
 
-		var memoized = memoize(fn);
+		const memoized = memoize(fn);
 
 		try {
 			memoized('foo');
@@ -258,14 +257,14 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should memoize errors', function(done) {
-		var hits = 0;
-		var fn = function errorFunction(done) {
+		let hits = 0;
+		const fn = function errorFunction(done) {
 			hits++;
 			if (hits === 1) done(new Error('Hit Error!'));
 			else done();
 		};
 
-		var memoized = memoize(fn, 1000);
+		const memoized = memoize(fn, 1000);
 		memoized(function(e) {
 			e.should.be.an.instanceOf(Error);
 			e.message.should.eql('Hit Error!');
@@ -278,15 +277,15 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should not memoize errors that are filtered out', function(done) {
-		var hits = 0;
-		var fn = function errorFunction(done) {
+		let hits = 0;
+		const fn = function errorFunction(done) {
 			hits++;
 			if (hits === 1) done(new Error('Hit Error!'));
 			else if (hits === 2) done(new Error('Special Error!'));
 			else done(null, hits);
 		};
 
-		var do_memoize = require('../')(redis, {
+		const do_memoize = require('../')(redis, {
 			memoize_key_namespace: Date.now(),
 			memoize_errors_when: function(err) {
 				return err.message !== 'Hit Error!';
@@ -295,7 +294,7 @@ describe('redis-memoizer', function() {
 
 		// First error won't be memoized, so expect hits to increment on subsequent calls.
 		// Second error will, so hits will freeze there.
-		var memoized = do_memoize(fn, 1000);
+		const memoized = do_memoize(fn, 1000);
 		memoized(function(e) {
 			e.should.be.an.instanceOf(Error);
 			e.message.should.eql('Hit Error!');
@@ -317,21 +316,21 @@ describe('redis-memoizer', function() {
 	});
 
 	it('should not memoize two identical-looking functions to the same key', function(done) {
-		var funcA = (function() {
-			var a = 10;
+		const funcA = (function() {
+			const a = 10;
 			return function(cb) {
 				return cb(a);
 			};
 		})();
-		var funcB = (function() {
-			var a = 20;
+		const funcB = (function() {
+			const a = 20;
 			return function(cb) {
 				return cb(a);
 			};
 		})();
 
-		var memoizedA = memoize(funcA);
-		var memoizedB = memoize(funcB);
+		const memoizedA = memoize(funcA);
+		const memoizedB = memoize(funcB);
 		memoizedA(function(result) {
 			result.should.eql(10);
 			memoizedB(function(result2) {
