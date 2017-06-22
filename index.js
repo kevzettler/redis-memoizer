@@ -226,9 +226,8 @@ function gzip(value, cb) {
 }
 
 function gunzip(value, cb) {
-  if (value == null) return cb(null, value);
   // Check for GZIP MAGIC, if there unzip it.
-  if (value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
+  if (value instanceof Buffer && value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
     zlib.gunzip(value.slice(GZIP_MAGIC_LENGTH), cb);
   } else {
     cb(null, value);
