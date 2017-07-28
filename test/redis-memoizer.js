@@ -6,7 +6,11 @@ const redis = require('fakeredis').createClient(redisOptions);
 // Compat fix w/fakeredis
 redis.options = redisOptions;
 const key_namespace = Date.now();
-const memoize = require('../')(redis, {memoize_key_namespace: key_namespace});
+const memoizePkg = require('../');
+const memoize = memoizePkg(redis, {memoize_key_namespace: key_namespace});
+memoizePkg.uuid = function(fn) {
+	return memoizePkg.hash(fn.toString());
+};
 
 /*global describe:true, it:true */
 describe('redis-memoizer', function() {
@@ -16,7 +20,7 @@ describe('redis-memoizer', function() {
 
 	function clearCache(fn, args, done) {
 		const stringified = JSON.stringify(args);
-		redis.del(['memos', key_namespace, fn.memoize_key, hash(stringified)].join(':'), done);
+		redis.del(['memos', key_namespace, memoizePkg.uuid(fn), hash(stringified)].join(':'), done);
 	}
 
 	it('should memoize a value correctly', function(done) {

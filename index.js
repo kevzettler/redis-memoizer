@@ -37,12 +37,21 @@ module.exports = function createMemoizeFunction(client, options) {
   return memoizeFn.bind(null, client, options, keyNamespace);
 };
 
+// Exported so it can be overridden
+module.exports.uuid = function() {
+  return uuid.v4();
+};
+
+module.exports.hash = function(args) {
+  return crypto.createHash('sha1').update(JSON.stringify(args)).digest('hex');
+};
+
 function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   // We need to just uniquely identify this function, no way in hell are we going to try
   // to make different memoize calls of the same function actually match up (and save the key).
   // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
   // yet be very different. This guid() seems to do the trick.
-  let functionKey = uuid.v4();
+  let functionKey = module.exports.uuid(fn);
   let inFlight = {};
   let ttlfn;
 
@@ -51,7 +60,7 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   } else {
     ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
   }
-  const out = function memoizedFunction() {
+  return function memoizedFunction() {
     const self = this;  // if 'this' is used in the function
 
     const args = new Array(arguments.length);
@@ -65,7 +74,7 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
     }
 
     // Hash the args so we can look for this key in redis.
-    const argsHash = hash(JSON.stringify(args));
+    const argsHash = module.exports.hash(args);
 
     // Set a timeout on the retrieval from redis.
     let timeout = setTimeout(function() {
@@ -111,10 +120,11 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
           }
 
           // If the same request was in flight from other sources, resolve them.
-          if(inFlight[argsHash]) {
-            inFlight[argsHash].forEach(function(cb) {
-              cb.apply(self, resultArgs);
-            });
+          const fnsInFlight = inFlight[argsHash];
+          if(fnsInFlight) {
+            for (let i = 0; i < fnsInFlight.length; i++) {
+              fnsInFlight[i].apply(self, resultArgs);
+            }
             // This is going to be a slow object anyway
             delete inFlight[argsHash];
           }
@@ -122,12 +132,6 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
       }
     }
   };
-  out.memoize_key = functionKey;
-  return out;
-}
-
-function hash(string) {
-  return crypto.createHash('sha1').update(string).digest('hex');
 }
 
 // Used as filter function in JSON.parse so it properly restores dates
