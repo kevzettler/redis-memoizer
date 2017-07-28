@@ -1,7 +1,10 @@
 'use strict';
 const crypto = require('crypto');
 const should = require('should');
-const redis = require('redis').createClient({return_buffers: true});
+const redisOptions = {return_buffers: true};
+const redis = require('fakeredis').createClient(redisOptions);
+// Compat fix w/fakeredis
+redis.options = redisOptions;
 const key_namespace = Date.now();
 const memoize = require('../')(redis, {memoize_key_namespace: key_namespace});
 
