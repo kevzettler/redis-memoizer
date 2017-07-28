@@ -115,9 +115,8 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
             inFlight[argsHash].forEach(function(cb) {
               cb.apply(self, resultArgs);
             });
-            // Rather than use delete set null here so inFlight doesn't become a slow obj.
-            // TODO figure out if this leaks enough memory to matter
-            inFlight[argsHash] = null;
+            // This is going to be a slow object anyway
+            delete inFlight[argsHash];
           }
         }));
       }
