@@ -12,7 +12,7 @@ module.exports = function createMemoizeFunction(client, options) {
   options.return_buffers = true;
   // Support passing in an existing client. If the first arg is not a client, assume that it is
   // connection parameters.
-  if (!client || !(client.constructor && client.constructor.name === 'RedisClient')) {
+  if (!client || !(client.constructor && (client.constructor.name === 'RedisClient' || client.constructor.name === 'Redis'))) {
     client = redis.createClient.apply(redis, arguments);
   }
 
@@ -155,7 +155,10 @@ function reviver (key, value) {
 
 function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
-  if (!client.connected) {
+  // 'or' here is for ioredis/node_redis compat
+  const connectedNodeRedis = Boolean(client.connected);
+  const connectedIORedis = client.status === 'ready';
+  if (!(connectedNodeRedis || connectedIORedis)) {
     return done(new Error('Redis-Memoizer: Not connected.'));
   }
   compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'), function(err, value) {
