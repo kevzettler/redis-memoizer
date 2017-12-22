@@ -153,12 +153,16 @@ function reviver (key, value) {
   return value;
 }
 
-function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
+function isReady(client) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
   // 'or' here is for ioredis/node_redis compat
   const connectedNodeRedis = Boolean(client.connected);
   const connectedIORedis = client.status === 'ready';
-  if (!(connectedNodeRedis || connectedIORedis)) {
+  return Boolean(connectedNodeRedis || connectedIORedis);
+}
+
+function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
+  if (!isReady(client)) {
     return done(new Error('Redis-Memoizer: Not connected.'));
   }
   compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'), function(err, value) {
@@ -176,7 +180,7 @@ function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
 }
 
 function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl, done) {
-  if (!client.connected) {
+  if (!isReady(client)) {
     return done && done(new Error('Redis-Memoizer: Not connected.'));
   }
   // Don't bother writing if ttl is 0.
@@ -196,7 +200,8 @@ function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl, done
 }
 
 function compressedGet(client, key, cb) {
-  client.get(new Buffer(key), function(err, zippedVal) {
+  const get = client.getBuffer || client.get;
+  get.call(client, new Buffer(key), function(err, zippedVal) {
     if (err) return cb(err);
     gunzip(zippedVal, function(err, retVal) {
       if (err) return cb(err);
