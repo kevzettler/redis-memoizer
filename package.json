@@ -19,12 +19,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "bluebird": "^3.5.1",
+    "ioredis": "^3.2.2",
     "node-uuid": "^1.4.7"
   },
   "devDependencies": {
     "fakeredis": "^2.0.0",
-    "mocha": "^1.8.1",
-    "redis": "^2.6.3",
-    "should": "^1.2.1"
+    "mocha": "^4.0.1",
+    "should": "^13.1.3"
   }
 }

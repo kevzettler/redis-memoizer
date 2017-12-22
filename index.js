@@ -1,8 +1,10 @@
 'use strict';
-const redis = require('redis');
+const redis = require('ioredis');
 const crypto = require('crypto');
 const uuid = require('node-uuid');
 const zlib = require('zlib');
+const util = require('util');
+const Promise = require('bluebird');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
@@ -14,10 +16,6 @@ module.exports = function createMemoizeFunction(client, options) {
   // connection parameters.
   if (!client || !(client.constructor && (client.constructor.name === 'RedisClient' || client.constructor.name === 'Redis'))) {
     client = redis.createClient.apply(redis, arguments);
-  }
-
-  if (!client.options.return_buffers) {
-    throw new Error("A redis client passed to the memoizer must have the option `return_buffers` set to true.");
   }
 
   if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
@@ -52,84 +50,51 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
   // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
   // yet be very different. This guid() seems to do the trick.
   let functionKey = module.exports.uuid(fn);
-  let inFlight = {};
   let ttlfn;
 
   if(typeof ttl === 'function') {
     ttlfn = ttl;
   } else {
-    ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
+    if (!ttl) ttl = options.default_ttl;
+    ttlfn = () => ttl;
   }
-  return function memoizedFunction() {
-    const self = this;  // if 'this' is used in the function
 
-    const args = new Array(arguments.length);
-    for (let i = 0; i < args.length; i++) {
-      args[i] = arguments[i];
-    }
-    const done = args.pop();
-
-    if (typeof done !== 'function') {
-      throw new Error('Redis-Memoizer: Last argument to memoized function must be a callback!');
-    }
-
+  return async function memoizedFunction(...args) {
     // Hash the args so we can look for this key in redis.
     const argsHash = module.exports.hash(args);
+    const write = (result) => writeKeyToRedis(client, keyNamespace, functionKey, argsHash, result, ttlfn(result));
 
     // Set a timeout on the retrieval from redis.
-    let timeout = setTimeout(function() {
-      onLookup(new Error('Redis-Memoizer: Lookup timeout.'));
-    }, Math.min(ttlfn(), options.lookup_timeout));
+    const timeoutMs = Math.min(ttlfn(), options.lookup_timeout);
 
     // Attempt to get the result from redis.
-    getKeyFromRedis(client, keyNamespace, functionKey, argsHash, onLookup);
+    let memoValue;
+    try {
+      memoValue = await Promise.resolve(getKeyFromRedis(client, keyNamespace, functionKey, argsHash))
+        .timeout(timeoutMs);
+      // Note this may be an error, but that
+    } catch (err) {
+      // Continue on
+      if (process.env.NODE_ENV !== 'production') console.error(err.message);
+    }
 
-    function onLookup(err, value) {
-      // Don't run twice.
-      if (!timeout) return;
-      // Clear pending timeout if it hasn't been already, and null it.
-      clearTimeout(timeout);
-      timeout = null;
+    if (memoValue instanceof Error) throw memoValue; // we memoized an error.
+    if (memoValue != null) return memoValue; // we memoized something we want to return;
 
-      if (err && process.env.NODE_ENV !== 'production') console.error(err.message);
-      // If the value was found in redis, we're done, call back with it.
-      if (value) {
-        return done.apply(self, value);
-      }
-      // Prevent a cache stampede, queue this result.
-      else if (inFlight[argsHash]) {
-        return inFlight[argsHash].push(done);
-      }
-      // No other requests in flight, let's call the real function and get the result.
-      else {
-        // Mark this function as in flight.
-        inFlight[argsHash] = [done];
-
-        if (timeLabel) console.time(options.time_label_prefix + timeLabel);
-
-        fn.apply(self, args.concat(function() {
-          const resultArgs = new Array(arguments.length);
-          for (let i = 0; i < resultArgs.length; i++) {
-            resultArgs[i] = arguments[i];
-          }
-          if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
-
-          // Don't write results that throw a connection error (service interruption);
-          if (!(resultArgs[0] instanceof Error) || options.memoize_errors_when(resultArgs[0])) {
-            writeKeyToRedis(client, keyNamespace, functionKey, argsHash, resultArgs, ttlfn.apply(null, resultArgs));
-          }
-
-          // If the same request was in flight from other sources, resolve them.
-          const fnsInFlight = inFlight[argsHash];
-          if(fnsInFlight) {
-            for (let i = 0; i < fnsInFlight.length; i++) {
-              fnsInFlight[i].apply(self, resultArgs);
-            }
-            // This is going to be a slow object anyway
-            delete inFlight[argsHash];
-          }
-        }));
-      }
+    try {
+      // TODO lock; first attempt to get directly, if empty, then get lock and try again, only then do we run fn
+      if (timeLabel) console.time(options.time_label_prefix + timeLabel);
+      // Run the fn, save the result
+      const result = await fn.apply(this, args);
+      if (typeof result === Error) throw result;
+      await write(result);
+      return result;
+    } catch (e) {
+      // original function errored, should we memoize that?
+      if (options.memoize_errors_when(e)) await write(e);
+      throw e;
+    } finally {
+      if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
     }
   };
 }
@@ -153,89 +118,66 @@ function reviver (key, value) {
   return value;
 }
 
-function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
+async function getKeyFromRedis(client, keyNamespace, fnKey, argsHash) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
-  // 'or' here is for ioredis/node_redis compat
-  const connectedNodeRedis = Boolean(client.connected);
-  const connectedIORedis = client.status === 'ready';
-  if (!(connectedNodeRedis || connectedIORedis)) {
-    return done(new Error('Redis-Memoizer: Not connected.'));
-  }
-  compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'), function(err, value) {
-    if (err) return done(err);
-
-    // Attempt to parse the result. If that fails, return a parse error instead.
-    try {
-      if (value) value = JSON.parse(value, reviver);
-    } catch(e) {
-      err = e;
-      value = null;
-    }
-    done(err, value);
-  });
+  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+  let value = await compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'));
+  if (value instanceof Buffer) value = value.toString();
+  if (value == null || value === '') return value;
+  return JSON.parse(value, reviver);
 }
 
-function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl, done) {
-  if (!client.connected) {
-    return done && done(new Error('Redis-Memoizer: Not connected.'));
-  }
+async function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl) {
+  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
   // Don't bother writing if ttl is 0.
-  if (ttl === 0) {
-    return process.nextTick(done || function() {});
-  }
+  if (ttl === 0) return;
+
   // If the value was an error, we need to do some herky-jerky stringifying.
-  if (value[0] instanceof Error) {
+  if (value instanceof Error) {
     // Mark errors so we can revive them
-    value[0].$__memoized_error = true;
+    value.$__memoized_error = true;
     // Seems to do pretty well on errors
     value = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', '$__memoized_error']);
   } else {
     value = JSON.stringify(value);
   }
-  compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, value, done);
+  return compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, value);
 }
 
-function compressedGet(client, key, cb) {
-  client.get(new Buffer(key), function(err, zippedVal) {
-    if (err) return cb(err);
-    gunzip(zippedVal, function(err, retVal) {
-      if (err) return cb(err);
-      cb(null, retVal);
-    });
-  });
+function isReady(client) {
+  return client.status === 'ready';
 }
 
-function compressedPSetX(client, key, ttl, value, cb) {
-  gzip(value, function(err, zippedVal) {
-    if (err) return cb(err);
-    client.psetex(new Buffer(key), ttl, zippedVal, function(err, retVal) {
-      if (err && cb) return cb(err);
-      cb && cb(null, retVal);
-    });
-  });
+//
+// GZIP
+//
+
+const gzipAsync = util.promisify(zlib.gzip);
+const gunzipAsync = util.promisify(zlib.gunzip);
+
+async function compressedGet(client, key, cb) {
+  const zippedVal = await client.getBuffer(key);
+  return gunzip(zippedVal);
 }
 
-function gzip(value, cb) {
-  if (value == null) return cb(null, value);
-  // Too small to effectively gzip
-  if (value.length < 500) return cb(null, value);
-  if (process.env.NODE_ENV === 'test') {
-    // Race condition otherwise in testing between setting keys and retrieving them
-    const zippedVal = zlib.gzipSync(value);
-    cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
-  } else {
-    zlib.gzip(value, function(err, zippedVal) {
-      if (err) return cb(err);
-      cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
-    });
-  }
+async function compressedPSetX(client, key, ttl, value) {
+  const zippedVal = await gzip(value);
+  return client.psetex(key, ttl, zippedVal);
 }
 
-function gunzip(value, cb) {
+async function gzip(value) {
+  // null or too small to effectively gzip
+  if (value == null || value.length < 500) return value;
+
+  const zippedVal = await gzipAsync(value);
+  return Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH);
+}
+
+async function gunzip(value, cb) {
   // Check for GZIP MAGIC, if there unzip it.
   if (value instanceof Buffer && value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
-    zlib.gunzip(value.slice(GZIP_MAGIC_LENGTH), cb);
+    return gunzipAsync(value.slice(GZIP_MAGIC_LENGTH));
   } else {
-    cb(null, value);
+    return value;
   }
 }
