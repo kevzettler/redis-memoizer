@@ -1,5 +1,6 @@
 'use strict';
 const Promise = require('bluebird');
+const {exec} = require('./redisCompat');
 
 // Variant of redis-lock intended for use with redis-memoizer. Unlike redis-lock,
 // this instead takes an overall timeout, after which the lock is disregarded. This ensures
@@ -9,8 +10,8 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay) {
     const timeoutLeft = timeoutStamp - Date.now();
     if (timeoutLeft <= 0) return;
     // Set an exclusive key. PX is timeout in ms, NX is don't set if already set.
-    const result = await client.set(lockName, '1', 'PX', timeoutLeft, 'NX');
-    if (result !== 'OK') throw new Error('Lock not acquired.');
+    const result = await exec(client, 'set', lockName, '1', 'PX', timeoutLeft, 'NX');
+    if (result.toString() !== 'OK') throw new Error('Lock not acquired.');
   } catch (e) {
     // Try again if we errored for some reason: internal error or just lock already held.
     await Promise.delay(retryDelay);
@@ -31,7 +32,7 @@ module.exports = function(client, retryDelay) {
 
     return function unlock() {
       // Now that the task is done, if the lock would still exist, kill it
-      if (timeoutStamp > Date.now()) return client.del(lockName);
+      if (timeoutStamp > Date.now()) return exec(client, 'del', lockName);
       return Promise.resolve();
     };
   };

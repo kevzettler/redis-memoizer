@@ -7,7 +7,9 @@
   },
   "main": "index.js",
   "scripts": {
-    "test": "NODE_ENV=test ./node_modules/mocha/bin/mocha --reporter spec --timeout 5000"
+    "test": "npm run test-ioredis; npm run test-node_redis",
+    "test-ioredis": "NODE_ENV=test REDIS_TYP=ioredis mocha",
+    "test-node_redis": "NODE_ENV=test REDIS_TYP=node_redis mocha"
   },
   "repository": "",
   "contributors": [
@@ -19,13 +21,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "bluebird": "^3.5.1",
-    "ioredis": "^3.2.2"
+    "bluebird": "^3.5.1"
   },
   "devDependencies": {
     "eslint": "^4.14.0",
-    "fakeredis": "^2.0.0",
+    "ioredis": "^3.2.2",
     "mocha": "^4.0.1",
+    "redis": "^2.8.0",
     "should": "^13.1.3"
   }
 }

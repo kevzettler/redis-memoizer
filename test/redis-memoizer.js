@@ -1,42 +1,53 @@
-const Redis = require('ioredis');
+const IORedis = require('ioredis');
+const Node_Redis = require('redis');
 const crypto = require('crypto');
 const should = require('should');
 const Promise = require('bluebird');
 
 const key_namespace = Date.now();
 const memoizePkg = require('../');
-const client = new Redis({port: 6780});
-let memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
+const {exec} = require('../redisCompat');
+const PORT = parseInt(process.env.PORT) || 6379;
 
 const hash = string => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 
-const originalMemoize = memoize;
-// Record the name so we can clear this out
-memoize = function(fn, options) {
-  // Ensures we can't clobber our own names
-  fn._name = String(Math.random()) + memoizePkg.getFunctionKey(fn, options);
-  return originalMemoize.apply(this, arguments);
-};
-
-function clearCache(fn, args = []) {
+function clearCache(client, fn, args = []) {
   const stringified = JSON.stringify(args);
-  return client.del(['memos', key_namespace, memoizePkg.getFunctionKey(fn, {}), hash(stringified)].join(':'));
+  return exec(client, 'del', ['memos', key_namespace, memoizePkg.getFunctionKey(fn, {}), hash(stringified)].join(':'));
 }
 
-async function delKeys(keyPattern) {
-  const keys = await client.keys(keyPattern);
-  return await Promise.map(keys, (key) => client.del(key));
+async function delKeys(client, keyPattern) {
+  const keys = await exec(client, 'keys', keyPattern);
+  return await Promise.map(keys, (key) => exec(client, 'del', key));
 }
 
 describe('redis-memoizer', () => {
 
+  let client;
+  if (process.env.REDIS_TYP === 'ioredis') {
+    client = new IORedis({port: PORT});
+  } else {
+    Promise.promisifyAll(Node_Redis.RedisClient.prototype);
+    Promise.promisifyAll(Node_Redis.Multi.prototype);
+    client = Node_Redis.createClient(PORT, {return_buffers: true});
+  }
+  let memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
+
+  const originalMemoize = memoize;
+  // Record the name so we can clear this out
+  memoize = function(fn, options) {
+    // Ensures we can't clobber our own names
+    fn._name = String(Math.random()) + memoizePkg.getFunctionKey(fn, options);
+    return originalMemoize.apply(this, arguments);
+  };
+
   before(async () => {
-    await delKeys(key_namespace + ':*');
+    await delKeys(client, key_namespace + ':*');
   });
 
 	after(async () => {
-    await delKeys(key_namespace + ':*');
-		client.end();
+    await delKeys(client, key_namespace + ':*');
+		client.end(true);
 	});
 
   it('should memoize a value correctly', async () => {
@@ -63,7 +74,7 @@ describe('redis-memoizer', () => {
     (Date.now() - start < functionDelayTime).should.be.true;		// Second call should be faster
     callCount.should.equal(1);
 
-    await clearCache(functionToMemoize, [1, 2]);
+    await clearCache(client, functionToMemoize, [1, 2]);
   });
 
   it('should memoize separate function separately', async () => {
@@ -77,8 +88,8 @@ describe('redis-memoizer', () => {
     (await memoizedFn2('y')).should.equal(2);
     (await memoizedFn1('x')).should.equal(1);
 
-    await clearCache(function1, ['x']);
-    await clearCache(function2, ['y']);
+    await clearCache(client, function1, ['x']);
+    await clearCache(client, function2, ['y']);
   });
 
   async function stampede(options, memoizerOptions, memoizeOptions) {
@@ -98,7 +109,7 @@ describe('redis-memoizer', () => {
     await Promise.all([ ...Array(options.iters).keys() ].map(() => memoized()));
     const duration = Date.now() - start;
     callCount.should.equal(1);
-    await clearCache(fn);
+    await clearCache(client, fn);
     return duration;
   }
 
@@ -132,7 +143,7 @@ describe('redis-memoizer', () => {
 
     (await memoizedY()).should.equal(1);
 
-    await clearCache(Obj.prototype.y);
+    await clearCache(client, Obj.prototype.y);
   });
 
   it('should respect the ttl', async () => {
@@ -157,7 +168,7 @@ describe('redis-memoizer', () => {
     await memoized();
     (Date.now() - start >= functionDelayTime).should.be.true;
 
-    await clearCache(fn);
+    await clearCache(client, fn);
   });
 
   it('should allow ttl to be a function', async () => {
@@ -182,7 +193,7 @@ describe('redis-memoizer', () => {
     await memoized();
     (Date.now() - start >= functionDelayTime).should.be.true;
 
-    await clearCache(fn);
+    await clearCache(client, fn);
   });
 
   it('should work if complex types are accepted and returned', async () => {
@@ -206,7 +217,7 @@ describe('redis-memoizer', () => {
     arg1.should.eql({ input: 'data' });
     some.should.eql(['other', 'data']);
 
-    await clearCache(fn, [{input: "data"}]);
+    await clearCache(client, fn, [{input: "data"}]);
   });
 
   it('should memoize even if result is falsy', async () => {
@@ -223,7 +234,7 @@ describe('redis-memoizer', () => {
       (await memoized() === falsyValue).should.be.true;  // Repeated, presumably cache-hit
       callCount.should.equal(1);  // Verify cache hit
 
-      await clearCache(fn);
+      await clearCache(client, fn);
     }));
   });
 
@@ -275,7 +286,7 @@ describe('redis-memoizer', () => {
 		val1.should.eql(date1);
 		val2.should.eql(date2);
 
-		await clearCache(fn, date1);
+		await clearCache(client, fn, date1);
 	});
 
 	it('should memoize errors', async function() {
