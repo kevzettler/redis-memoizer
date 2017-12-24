@@ -9,7 +9,8 @@
   "scripts": {
     "test": "npm run test-ioredis; npm run test-node_redis",
     "test-ioredis": "NODE_ENV=test REDIS_TYP=ioredis mocha",
-    "test-node_redis": "NODE_ENV=test REDIS_TYP=node_redis mocha"
+    "test-node_redis": "NODE_ENV=test REDIS_TYP=node_redis mocha",
+    "test-fakeredis": "NODE_ENV=test REDIS_TYP=fakeredis mocha"
   },
   "repository": "",
   "contributors": [
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "eslint": "^4.14.0",
+    "fakeredis": "^2.0.0",
     "ioredis": "^3.2.2",
     "mocha": "^4.0.1",
     "redis": "^2.8.0",

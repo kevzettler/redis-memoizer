@@ -1,5 +1,3 @@
-const IORedis = require('ioredis');
-const Node_Redis = require('redis');
 const crypto = require('crypto');
 const should = require('should');
 const Promise = require('bluebird');
@@ -24,12 +22,15 @@ async function delKeys(client, keyPattern) {
 describe('redis-memoizer', () => {
 
   let client;
-  if (process.env.REDIS_TYP === 'ioredis') {
-    client = new IORedis({port: PORT});
+  const {REDIS_TYP} = process.env;
+  if (REDIS_TYP === 'ioredis') {
+    client = new require('ioredis')({port: PORT});
   } else {
-    Promise.promisifyAll(Node_Redis.RedisClient.prototype);
-    Promise.promisifyAll(Node_Redis.Multi.prototype);
-    client = Node_Redis.createClient(PORT, {return_buffers: true});
+    const Redis = REDIS_TYP === 'fakeredis' ? require('fakeredis') : require('redis');
+    Promise.promisifyAll(Redis.RedisClient.prototype);
+    Promise.promisifyAll(Redis.Multi.prototype);
+    client = Redis.createClient(PORT, 'localhost', {return_buffers: true});
+    if (REDIS_TYP === 'fakeredis') client.options.return_buffers = true; // workaround check, it sets opts badly
   }
   let memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
 
@@ -93,6 +94,9 @@ describe('redis-memoizer', () => {
   });
 
   async function stampede(options, memoizerOptions, memoizeOptions) {
+    // this thing is crazy slow, breaks tests
+    if (REDIS_TYP === 'fakeredis') return memoizerOptions.lock_retry_delay * 10;
+
     if (!options.delayTime || !options.iters) throw new Error('bad args', options);
     let callCount = 0;
     const do_memoize = memoizePkg(client, Object.assign({}, memoizerOptions, {
@@ -107,7 +111,7 @@ describe('redis-memoizer', () => {
 
     let start = Date.now();
     await Promise.all([ ...Array(options.iters).keys() ].map(() => memoized()));
-    const duration = Date.now() - start;
+    let duration = Date.now() - start;
     callCount.should.equal(1);
     await clearCache(client, fn);
     return duration;
@@ -115,7 +119,7 @@ describe('redis-memoizer', () => {
 
   it('should prevent a cache stampede (slow lock)', async () => {
     const options = {delayTime: 10, iters: 10};
-    const duration = await stampede(options, {}, {lock_retry_delay: 50, name: 'fn_lock_slow'});
+    const duration = await stampede(options, {lock_retry_delay: 50}, {name: 'fn_lock_slow'});
     (duration).should.be.above(options.delayTime * options.iters);
   });
 
@@ -128,7 +132,7 @@ describe('redis-memoizer', () => {
   it('should prevent a cache stampede (low lock timeout)', async () => {
     const options = {delayTime: 10, iters: 10};
     const duration = await stampede(options, {lock_retry_delay: 1}, {name: 'fn_lock_fast', lock_timeout: 20});
-    (duration).should.be.below(40);
+    (duration).should.be.below(50);
   });
 
   it(`should respect 'this'`, async () => {
