@@ -233,6 +233,21 @@ describe('redis-memoizer', () => {
     await clearCache(client, fn);
   });
 
+  // FIXME this test is flaky when failing
+  it('should gracefully fail lookup timeout', async () => {
+    const fn = () => 1;
+    const do_memoize = memoizePkg(client, {
+      lookup_timeout: -1,
+    });
+
+    const memoized = do_memoize(fn, {name: 'timeout_fn', ttl: 1000});
+
+    const res = await memoized();
+    res.should.equal(1);
+
+    await clearCache(client, fn);
+  });
+
   it('should work if complex types are accepted and returned', async () => {
     const functionDelayTime = 10;
     const fn = async (arg1) => {

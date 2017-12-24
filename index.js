@@ -118,8 +118,8 @@ async function doLookup(client, key, timeout, options) {
   } catch (err) {
     // Continue on
     if (options.error_logging) console.error(err.message);
+    return internalNotFoundInRedis;
   }
-
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
   return memoValue;
 }
@@ -151,7 +151,7 @@ async function getKeyFromRedis(client, key) {
 
   // Coerce back
   if (value instanceof Buffer) value = value.toString(); // redis/ioredis compat
-  if (value === null) return internalNotFoundInRedis;
+  if (value == null) return internalNotFoundInRedis;
   else if (value === undefinedMarker) return undefined;
   else if (value === nullMarker) return null;
   else if (value === '') return value;
