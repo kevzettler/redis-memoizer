@@ -1,5 +1,4 @@
 'use strict';
-const redis = require('ioredis');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const util = require('util');
@@ -13,16 +12,23 @@ const nullMarker = '_$$_null';
 const internalNotFoundInRedis = '_$$_empty';
 const errorMarkerKey = '_$$_error';
 const defaultOptions = {
-  error_logging: process.env.NODE_ENV !== 'production',
-  lookup_timeout: 1000, // ms
-  // These can be overridden on memoization
+  // Properties prefixed with `default_` can be overridden when creating each memoized function.
+  // How long to persist memoized results to Redis. This can be overridden per-fn.
   default_ttl: 120000,
+  // How long to wait for the lock (including retries)
   default_lock_timeout: 5000,
-  // Set to a function that determines whether or not to memoize an error.
-  memoize_errors_when: (err) => true,
+
+  // How long to wait on Redis before just moving on.
+  // If the TTL fed to `memoize` is shorter than this, it will be used instead.
+  lookup_timeout: 1000, // ms
+  // Set to a function that determines whether or not to memoize an error. By default, we never do.
+  memoize_errors_when: (err) => false,
+  // Namespace to use under `memos:` in redis. Useful to e.g. invalidate all cache after
+  // an application update; simply set this to the current git revision or use the boot timestamp.
   memoize_key_namespace: null,
   // How often to spin on the lock
   lock_retry_delay: 50,
+  error_logging: process.env.NODE_ENV !== 'production',
 };
 
 module.exports = function createMemoizeFunction(client, options = {}) {
@@ -49,7 +55,7 @@ module.exports.hash = function(args) {
 };
 
 function memoizeFn(client, options, lock, fn,
-                   {ttl = options.default_ttl, lock_timeout = options.default_lock_timeout, name, timeLabel} = {}) {
+                   {ttl = options.default_ttl, lock_timeout = options.default_lock_timeout, name} = {}) {
   let functionKey = module.exports.getFunctionKey(fn, name);
   const ttlfn = typeof ttl === 'function' ? ttl : () => ttl;
 
