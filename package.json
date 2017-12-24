@@ -1,9 +1,9 @@
 {
   "name": "redis-memoizer",
-  "version": "0.6.1",
-  "description": "A memoizer using redis as a shared cache, with TTL.",
+  "version": "2.0.0",
+  "description": "A promise-based memoizer using redis as a shared cache, with TTL.",
   "engines": {
-    "node": ">=4"
+    "node": ">=8"
   },
   "main": "index.js",
   "scripts": {
