@@ -32,6 +32,7 @@ const defaultOptions = {
 };
 
 module.exports = function createMemoizeFunction(client, options = {}) {
+  // NOTE: This only supports ioredis right now
   if (!client || !(client.constructor && (client.constructor.name === 'RedisClient' || client.constructor.name === 'Redis'))) {
     throw new Error('Pass a Redis client as the first argument.');
   }
@@ -151,6 +152,7 @@ async function getKeyFromRedis(client, key) {
 
 async function writeKeyToRedis(client, key, value, ttl) {
   if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+
   // Don't bother writing if ttl is 0.
   if (ttl === 0) return;
 
@@ -173,6 +175,7 @@ async function writeKeyToRedis(client, key, value, ttl) {
   return compressedPSetX(client, key, ttl, serializedValue);
 }
 
+// NOTE: This only supports ioredis
 function isReady(client) {
   return client.status === 'ready';
 }
