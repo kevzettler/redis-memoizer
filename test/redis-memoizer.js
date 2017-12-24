@@ -113,6 +113,19 @@ describe('redis-memoizer', () => {
     await clearCache(client, function2, ['y']);
   });
 
+  it('should memoize same function with different args separately', async () => {
+    const fn = async arg => { await Promise.delay(10); return arg; };
+
+    const memoizedFn = memoize(fn, {name: 'fn_args'});
+
+    (await memoizedFn('x')).should.equal('x');
+    (await memoizedFn('y')).should.equal('y');
+    (await memoizedFn('x')).should.equal('x');
+
+    await clearCache(client, fn, ['x']);
+    await clearCache(client, fn, ['y']);
+  });
+
   async function stampede(options, memoizerOptions, memoizeOptions) {
     // this thing is crazy slow, breaks tests
     if (REDIS_TYP === 'fakeredis') return memoizerOptions.lock_retry_delay * 10;
