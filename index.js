@@ -4,7 +4,7 @@ const zlib = require('zlib');
 const util = require('util');
 const makeLockFn = require('./lock');
 const Promise = require('bluebird');
-const {exec, isReady} = require('./redisCompat');
+const {clientTyp, exec, isReady} = require('./redisCompat');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
@@ -33,10 +33,10 @@ const defaultOptions = {
 };
 
 module.exports = function createMemoizeFunction(client, options = {}) {
-  if (!client || !(client.constructor && (client.constructor.name === 'RedisClient' || client.constructor.name === 'Redis'))) {
+  const typ = clientTyp(client);
+  if (!typ) {
     throw new Error('Pass a Redis client as the first argument.');
-  }
-  if (client.constructor.name === 'RedisClient') {
+  } else if (typ === 'node_redis') {
     if (!client.getAsync) {
       throw new Error('Node_Redis clients must be promisified. Please use Bluebird to do this.');
     }
@@ -191,7 +191,10 @@ const gzipAsync = util.promisify(zlib.gzip);
 const gunzipAsync = util.promisify(zlib.gunzip);
 
 async function compressedGet(client, key, cb) {
-  const zippedVal = await exec(client, 'get', key);
+  let zippedVal;
+  // Have to use 'getBuffer' for ioredis
+  if (clientTyp(client) === 'ioredis') zippedVal = await client.getBuffer(key);
+  else zippedVal = await client.getAsync(key);
   return gunzip(zippedVal);
 }
 

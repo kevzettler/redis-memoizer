@@ -4,6 +4,7 @@ const Promise = require('bluebird');
 
 const key_namespace = Date.now();
 const memoizePkg = require('../');
+const pkgJSON = JSON.stringify(require('../package.json'));
 const {exec} = require('../redisCompat');
 const PORT = parseInt(process.env.PORT) || 6379;
 
@@ -76,6 +77,25 @@ describe('redis-memoizer', () => {
     callCount.should.equal(1);
 
     await clearCache(client, functionToMemoize, [1, 2]);
+  });
+
+  it('should memoize large values (gzip)', async () => {
+    let callCount = 0;
+    const functionToMemoize = async (val1) => {
+      callCount++;
+      return pkgJSON + val1;
+    };
+    const memoized = memoize(functionToMemoize, {name: 'pkg'});
+
+    const json = await memoized(1);
+    json.should.equal(pkgJSON + 1);
+    callCount.should.equal(1);
+
+    const json2 = await memoized(1);
+    json2.should.equal(pkgJSON + 1);
+    callCount.should.equal(1);
+
+    await clearCache(client, functionToMemoize, [1]);
   });
 
   it('should memoize separate function separately', async () => {

@@ -11,3 +11,9 @@ module.exports.isReady = function isReady(client) {
   const connectedIORedis = client.status === 'ready';
   return Boolean(connectedNodeRedis || connectedIORedis);
 };
+
+module.exports.clientTyp = function(client) {
+  if (!client) return null;
+  if (client.constructor.name === 'Redis') return 'ioredis';
+  else if (client.constructor.name === 'RedisClient') return 'node_redis';
+};
