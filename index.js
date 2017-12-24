@@ -1,148 +1,130 @@
 'use strict';
-const redis = require('redis');
 const crypto = require('crypto');
-const uuid = require('node-uuid');
 const zlib = require('zlib');
+const util = require('util');
+const makeLockFn = require('./lock');
+const Promise = require('bluebird');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
+const undefinedMarker = '_$$_undefined';
+const nullMarker = '_$$_null';
+const internalNotFoundInRedis = '_$$_empty';
+const errorMarkerKey = '_$$_error';
+const defaultOptions = {
+  // Properties prefixed with `default_` can be overridden when creating each memoized function.
+  // How long to persist memoized results to Redis. This can be overridden per-fn.
+  default_ttl: 120000,
+  // How long to wait for the lock (including retries)
+  default_lock_timeout: 5000,
 
-module.exports = function createMemoizeFunction(client, options) {
-  options = options || {};
-  options.return_buffers = true;
-  // Support passing in an existing client. If the first arg is not a client, assume that it is
-  // connection parameters.
+  // How long to wait on Redis before just moving on.
+  // If the TTL fed to `memoize` is shorter than this, it will be used instead.
+  lookup_timeout: 1000, // ms
+  // Set to a function that determines whether or not to memoize an error. By default, we never do.
+  memoize_errors_when: (err) => false,
+  // Namespace to use under `memos:` in redis. Useful to e.g. invalidate all cache after
+  // an application update; simply set this to the current git revision or use the boot timestamp.
+  memoize_key_namespace: null,
+  // How often to spin on the lock
+  lock_retry_delay: 50,
+  error_logging: process.env.NODE_ENV !== 'production',
+};
+
+module.exports = function createMemoizeFunction(client, options = {}) {
+  // NOTE: This only supports ioredis right now
   if (!client || !(client.constructor && (client.constructor.name === 'RedisClient' || client.constructor.name === 'Redis'))) {
-    client = redis.createClient.apply(redis, arguments);
+    throw new Error('Pass a Redis client as the first argument.');
   }
-
-  if (!client.options.return_buffers) {
-    throw new Error("A redis client passed to the memoizer must have the option `return_buffers` set to true.");
-  }
-
-  if (options.lookup_timeout === undefined) options.lookup_timeout = 1000; // ms
-  if (options.default_ttl === undefined) options.default_ttl = 120000;
-  if (options.time_label_prefix === undefined) options.time_label_prefix = '';
-  // Set to a function that determines whether or not to memoize an error.
-  if (options.memoize_errors_when === undefined) options.memoize_errors_when = function(err) {return true;};
-
-  // Apply key namespace, if present.
-  let keyNamespace = 'memos';
+  options = Object.assign({}, defaultOptions, options);
 
   // Allow custom namespaces, e.g. by git revision.
-  if (options.memoize_key_namespace) {
-    keyNamespace += ':' + options.memoize_key_namespace;
-  }
+  options.keyNamespace = `memos${options.memoize_key_namespace ? ':' + options.memoize_key_namespace : ''}`;
+  const lock = makeLockFn(client, options.lock_retry_delay);
 
-  return memoizeFn.bind(null, client, options, keyNamespace);
+  return memoizeFn.bind(null, client, options, lock);
 };
 
 // Exported so it can be overridden
-module.exports.uuid = function() {
-  return uuid.v4();
+module.exports.getFunctionKey = function(fn, name = fn._name) {
+  if (!name) throw new Error("Unable to determine memoization name for function: " + fn);
+  return name;
 };
 
 module.exports.hash = function(args) {
   return crypto.createHash('sha1').update(JSON.stringify(args)).digest('hex');
 };
 
-function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
-  // We need to just uniquely identify this function, no way in hell are we going to try
-  // to make different memoize calls of the same function actually match up (and save the key).
-  // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
-  // yet be very different. This guid() seems to do the trick.
-  let functionKey = module.exports.uuid(fn);
-  let inFlight = {};
-  let ttlfn;
+function memoizeFn(client, options, lock, fn,
+                   {ttl = options.default_ttl, lock_timeout = options.default_lock_timeout, name} = {}) {
+  let functionKey = module.exports.getFunctionKey(fn, name);
+  const ttlfn = typeof ttl === 'function' ? ttl : () => ttl;
 
-  if(typeof ttl === 'function') {
-    ttlfn = ttl;
-  } else {
-    ttlfn = function() { return ttl === undefined ? options.default_ttl : ttl; };
-  }
-  return function memoizedFunction() {
-    const self = this;  // if 'this' is used in the function
-
-    const args = new Array(arguments.length);
-    for (let i = 0; i < args.length; i++) {
-      args[i] = arguments[i];
-    }
-    const done = args.pop();
-
-    if (typeof done !== 'function') {
-      throw new Error('Redis-Memoizer: Last argument to memoized function must be a callback!');
-    }
-
+  return async function memoizedFunction(...args) {
     // Hash the args so we can look for this key in redis.
     const argsHash = module.exports.hash(args);
 
     // Set a timeout on the retrieval from redis.
-    let timeout = setTimeout(function() {
-      onLookup(new Error('Redis-Memoizer: Lookup timeout.'));
-    }, Math.min(ttlfn(), options.lookup_timeout));
+    const timeoutMs = Math.min(ttlfn(), options.lookup_timeout);
+    const key = `${options.keyNamespace}:${functionKey}:${argsHash}`;
 
     // Attempt to get the result from redis.
-    getKeyFromRedis(client, keyNamespace, functionKey, argsHash, onLookup);
+    const memoValue = await doLookup(client, key, timeoutMs, options);
+    // We return an internal marker if this thing was actually not found, versus just null
+    if (memoValue !== internalNotFoundInRedis) return memoValue;
 
-    function onLookup(err, value) {
-      // Don't run twice.
-      if (!timeout) return;
-      // Clear pending timeout if it hasn't been already, and null it.
-      clearTimeout(timeout);
-      timeout = null;
+    // Ok, we're going to have to actually execute the function.
+    // Lock ensures only one fn executes at a time and prevents a stampede.
+    const unlock = await lock(key, lock_timeout);
+    let didOriginalFn = false;
+    try {
+      // After we've acquired the lock, check if the key was populated in the meantime.
+      const memoValueRetry = await doLookup(client, key, timeoutMs, options);
+      if (memoValueRetry !== internalNotFoundInRedis) return memoValueRetry;
 
-      if (err && process.env.NODE_ENV !== 'production') console.error(err.message);
-      // If the value was found in redis, we're done, call back with it.
-      if (value) {
-        return done.apply(self, value);
+      // Run the fn, save the result
+      didOriginalFn = true;
+      const result = await fn.apply(this, args);
+      // Write the key, but don't await on it
+      writeKeyToRedis(client, key, result, ttlfn(result)).catch((err) => {
+        if (options.error_logging) console.error(err.message);
+      });
+
+      return result;
+    } catch (e) {
+      // original function errored, should we memoize that?
+      if (didOriginalFn && options.memoize_errors_when(e)) {
+        await writeKeyToRedis(client, key, e, ttlfn(e));
       }
-      // Prevent a cache stampede, queue this result.
-      else if (inFlight[argsHash]) {
-        return inFlight[argsHash].push(done);
-      }
-      // No other requests in flight, let's call the real function and get the result.
-      else {
-        // Mark this function as in flight.
-        inFlight[argsHash] = [done];
-
-        if (timeLabel) console.time(options.time_label_prefix + timeLabel);
-
-        fn.apply(self, args.concat(function() {
-          const resultArgs = new Array(arguments.length);
-          for (let i = 0; i < resultArgs.length; i++) {
-            resultArgs[i] = arguments[i];
-          }
-          if (timeLabel) console.timeEnd(options.time_label_prefix + timeLabel);
-
-          // Don't write results that throw a connection error (service interruption);
-          if (!(resultArgs[0] instanceof Error) || options.memoize_errors_when(resultArgs[0])) {
-            writeKeyToRedis(client, keyNamespace, functionKey, argsHash, resultArgs, ttlfn.apply(null, resultArgs));
-          }
-
-          // If the same request was in flight from other sources, resolve them.
-          const fnsInFlight = inFlight[argsHash];
-          if(fnsInFlight) {
-            for (let i = 0; i < fnsInFlight.length; i++) {
-              fnsInFlight[i].apply(self, resultArgs);
-            }
-            // This is going to be a slow object anyway
-            delete inFlight[argsHash];
-          }
-        }));
-      }
+      throw e;
+    } finally {
+      unlock();
     }
   };
 }
 
+async function doLookup(client, key, timeout, options) {
+  let memoValue;
+  try {
+    memoValue = await Promise.resolve(getKeyFromRedis(client, key)).timeout(timeout);
+  } catch (err) {
+    // Continue on
+    if (options.error_logging) console.error(err.message);
+  }
+
+  if (memoValue instanceof Error) throw memoValue; // we memoized an error.
+  return memoValue;
+}
+
 // Used as filter function in JSON.parse so it properly restores dates
 var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
-function reviver (key, value) {
+function reviver(key, value) {
   // Revive dates
   if (typeof value === 'string' && reISO.exec(value)) {
     return new Date(value);
   }
   // Revive errors
-  else if (value && value.$__memoized_error) {
+  else if (value && value.hasOwnProperty(errorMarkerKey)) {
     var err = new Error(value.message);
     err.stack = value.stack;
     err.name = value.name;
@@ -153,94 +135,81 @@ function reviver (key, value) {
   return value;
 }
 
-function isReady(client) {
+async function getKeyFromRedis(client, key) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
-  // 'or' here is for ioredis/node_redis compat
-  const connectedNodeRedis = Boolean(client.connected);
-  const connectedIORedis = client.status === 'ready';
-  return Boolean(connectedNodeRedis || connectedIORedis);
+  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+
+  let value = await compressedGet(client, key);
+
+  // Coerce back
+  if (value instanceof Buffer) value = value.toString(); // redis/ioredis compat
+  if (value === null) return internalNotFoundInRedis;
+  else if (value === undefinedMarker) return undefined;
+  else if (value === nullMarker) return null;
+  else if (value === '') return value;
+  else return JSON.parse(value, reviver);
 }
 
-function getKeyFromRedis(client, keyNamespace, fnKey, argsHash, done) {
-  if (!isReady(client)) {
-    return done(new Error('Redis-Memoizer: Not connected.'));
-  }
-  compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'), function(err, value) {
-    if (err) return done(err);
+async function writeKeyToRedis(client, key, value, ttl) {
+  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
 
-    // Attempt to parse the result. If that fails, return a parse error instead.
-    try {
-      if (value) value = JSON.parse(value, reviver);
-    } catch(e) {
-      err = e;
-      value = null;
-    }
-    done(err, value);
-  });
-}
-
-function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl, done) {
-  if (!isReady(client)) {
-    return done && done(new Error('Redis-Memoizer: Not connected.'));
-  }
   // Don't bother writing if ttl is 0.
-  if (ttl === 0) {
-    return process.nextTick(done || function() {});
-  }
-  // If the value was an error, we need to do some herky-jerky stringifying.
-  if (value[0] instanceof Error) {
+  if (ttl === 0) return;
+
+  // Convert a couple of placeholder values so we can distinguish between a value that is null/undefined,
+  // and the key not found.
+  let serializedValue;
+  if (value === undefined) {
+    serializedValue = undefinedMarker;
+  } else if (value === null) {
+    serializedValue = nullMarker;
+  } else if (value instanceof Error) {
     // Mark errors so we can revive them
-    value[0].$__memoized_error = true;
+    value[errorMarkerKey] = true;
     // Seems to do pretty well on errors
-    value = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', '$__memoized_error']);
+    serializedValue = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', errorMarkerKey]);
   } else {
-    value = JSON.stringify(value);
+    serializedValue = JSON.stringify(value);
   }
-  compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, value, done);
+
+  return compressedPSetX(client, key, ttl, serializedValue);
 }
 
-function compressedGet(client, key, cb) {
-  const get = client.getBuffer || client.get;
-  get.call(client, new Buffer(key), function(err, zippedVal) {
-    if (err) return cb(err);
-    gunzip(zippedVal, function(err, retVal) {
-      if (err) return cb(err);
-      cb(null, retVal);
-    });
-  });
+// NOTE: This only supports ioredis
+function isReady(client) {
+  return client.status === 'ready';
 }
 
-function compressedPSetX(client, key, ttl, value, cb) {
-  gzip(value, function(err, zippedVal) {
-    if (err) return cb(err);
-    client.psetex(new Buffer(key), ttl, zippedVal, function(err, retVal) {
-      if (err && cb) return cb(err);
-      cb && cb(null, retVal);
-    });
-  });
+//
+// GZIP
+//
+
+const gzipAsync = util.promisify(zlib.gzip);
+const gunzipAsync = util.promisify(zlib.gunzip);
+
+async function compressedGet(client, key, cb) {
+  const zippedVal = await client.getBuffer(key);
+  return gunzip(zippedVal);
 }
 
-function gzip(value, cb) {
-  if (value == null) return cb(null, value);
-  // Too small to effectively gzip
-  if (value.length < 500) return cb(null, value);
-  if (process.env.NODE_ENV === 'test') {
-    // Race condition otherwise in testing between setting keys and retrieving them
-    const zippedVal = zlib.gzipSync(value);
-    cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
-  } else {
-    zlib.gzip(value, function(err, zippedVal) {
-      if (err) return cb(err);
-      cb(null, Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH));
-    });
-  }
+async function compressedPSetX(client, key, ttl, value) {
+  const zippedVal = await gzip(value);
+  return client.psetex(key, ttl, zippedVal);
 }
 
-function gunzip(value, cb) {
+async function gzip(value) {
+  // null or too small to effectively gzip
+  if (value == null || value.length < 500) return value;
+
+  const zippedVal = await gzipAsync(value);
+  return Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH);
+}
+
+async function gunzip(value, cb) {
   // Check for GZIP MAGIC, if there unzip it.
   if (value instanceof Buffer && value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
-    zlib.gunzip(value.slice(GZIP_MAGIC_LENGTH), cb);
+    return gunzipAsync(value.slice(GZIP_MAGIC_LENGTH));
   } else {
-    cb(null, value);
+    return value;
   }
 }
