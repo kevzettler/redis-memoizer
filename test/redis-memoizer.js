@@ -5,22 +5,37 @@ const Promise = require('bluebird');
 
 const key_namespace = Date.now();
 const memoizePkg = require('../');
-const client = new Redis();
-const memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
-const originalUUID = memoizePkg.uuid;
-memoizePkg.uuid = function(fn) {
-  return memoizePkg.hash(fn.toString());
-};
+const client = new Redis({port: 6780});
+let memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
 
 const hash = string => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 
+const originalMemoize = memoize;
+// Record the name so we can clear this out
+memoize = function(fn, options) {
+  // Ensures we can't clobber our own names
+  fn._name = String(Math.random()) + memoizePkg.getFunctionKey(fn, options);
+  return originalMemoize.apply(this, arguments);
+};
+
 function clearCache(fn, args = []) {
   const stringified = JSON.stringify(args);
-  return client.del(['memos', key_namespace, memoizePkg.uuid(fn), hash(stringified)].join(':'));
+  return client.del(['memos', key_namespace, memoizePkg.getFunctionKey(fn, {}), hash(stringified)].join(':'));
 }
+
+async function delKeys(keyPattern) {
+  const keys = await client.keys(keyPattern);
+  return await Promise.map(keys, (key) => client.del(key));
+}
+
 describe('redis-memoizer', () => {
 
-	after(() => {
+  before(async () => {
+    await delKeys(key_namespace + ':*');
+  });
+
+	after(async () => {
+    await delKeys(key_namespace + ':*');
 		client.end();
 	});
 
@@ -32,7 +47,7 @@ describe('redis-memoizer', () => {
       await Promise.delay(functionDelayTime);
       return { val1, val2 };
     };
-    const memoized = memoize(functionToMemoize);
+    const memoized = memoize(functionToMemoize, {name: 'fn1'});
 
     let start = Date.now();
     let { val1, val2 } = await memoized(1, 2);
@@ -55,8 +70,8 @@ describe('redis-memoizer', () => {
     const function1 = async arg => { await Promise.delay(10); return 1; };
     const function2 = async arg => { await Promise.delay(10); return 2; };
 
-    const memoizedFn1 = memoize(function1);
-    const memoizedFn2 = memoize(function2);
+    const memoizedFn1 = memoize(function1, {name: 'fn1'});
+    const memoizedFn2 = memoize(function2, {name: 'fn2'});
 
     (await memoizedFn1('x')).should.equal(1);
     (await memoizedFn2('y')).should.equal(2);
@@ -75,7 +90,7 @@ describe('redis-memoizer', () => {
       callCount++;
       await Promise.delay(functionDelayTime);
     };
-    const memoized = memoize(fn);
+    const memoized = memoize(fn, {name: 'fn1'});
 
     let start = Date.now();
     await Promise.all([ ...Array(iterationCount).keys() ].map(() => memoized()));
@@ -93,7 +108,7 @@ describe('redis-memoizer', () => {
     };
 
     const obj = new Obj();
-    const memoizedY = memoize(obj.y).bind(obj);
+    const memoizedY = memoize(obj.y, {name: 'fn1'}).bind(obj);
 
     (await memoizedY()).should.equal(1);
 
@@ -105,7 +120,7 @@ describe('redis-memoizer', () => {
     const functionDelayTime = 10;
 
     const fn = () => Promise.delay(functionDelayTime);
-    const memoized = memoize(fn, ttl);
+    const memoized = memoize(fn, {name: 'fn1', ttl});
 
     let start = Date.now();
     await memoized();
@@ -129,7 +144,7 @@ describe('redis-memoizer', () => {
     const functionDelayTime = 10;
     const ttl = 100;
     const fn = () => Promise.delay(functionDelayTime);
-    const memoized = memoize(fn, () => ttl);
+    const memoized = memoize(fn, {name: 'fn1', ttl: () => ttl});
 
     let start = Date.now();
     await memoized();
@@ -157,7 +172,7 @@ describe('redis-memoizer', () => {
       return { arg1, some: ['other', 'data'] };
     };
 
-    const memoized = memoize(fn);
+    const memoized = memoize(fn, {name: 'fn1'});
 
     let start = Date.now();
     let { arg1, some } = await memoized({ input: 'data' });
@@ -175,14 +190,14 @@ describe('redis-memoizer', () => {
   });
 
   it('should memoize even if result is falsy', async () => {
-    await Promise.all([undefined, null, false, ''].map(async falsyValue => {
+    await Promise.all([undefined, null, false, ''].map(async (falsyValue, i) => {
       let callCount = 0;
       const fn = async () => {
         callCount++;
         return falsyValue;
       };
 
-      const memoized = memoize(fn);
+      const memoized = memoize(fn, {name: 'falsy_fn' + i});
 
       (await memoized() === falsyValue).should.be.true;
       (await memoized() === falsyValue).should.be.true;  // Repeated, presumably cache-hit
@@ -199,7 +214,7 @@ describe('redis-memoizer', () => {
       throw new Error('Test error');
     };
 
-    const memoized = memoize(fn);
+    const memoized = memoize(fn, {name: 'fn1'});
 
     try {
       await memoized();
@@ -222,7 +237,7 @@ describe('redis-memoizer', () => {
 			await Promise.delay(500);
 			return [arg1, date2];
 		};
-		const memoized = memoize(fn);
+		const memoized = memoize(fn, {name: 'fn1'});
 
 		let start = Date.now();
 		let [val1, val2] = await memoized(date1);
@@ -255,7 +270,7 @@ describe('redis-memoizer', () => {
 			memoize_errors_when: () => true,
 		});
 
-		const memoized = do_memoize(errorFunction, 1000);
+		const memoized = do_memoize(errorFunction, {name: 'fn1', ttl: 1000});
 		await memoized().should.be.rejectedWith(Error, { message: 'Hit Error #1' });
 		await memoized().should.be.rejectedWith(Error, { message: 'Hit Error #1' });
 	});
@@ -278,7 +293,7 @@ describe('redis-memoizer', () => {
 
 		// First error won't be memoized, so expect hits to increment on subsequent calls.
 		// Second error will, so hits will freeze there.
-		const memoized = do_memoize(errorFunction, 1000);
+		const memoized = do_memoize(errorFunction, {name: 'fn1', ttl: 1000});
 		await memoized().should.be.rejectedWith(Error, { message: 'Hit Error!' });
 		hits.should.eql(1);
 
@@ -291,25 +306,23 @@ describe('redis-memoizer', () => {
 	});
 
 	it('should not memoize two identical-looking functions to the same key', async function() {
-		const hackedUUID = memoizePkg.uuid;
-		memoizePkg.uuid = originalUUID;
 		const funcA = (function() {
 			const a = 10;
 			return async () => a;
 		})();
+    funcA._name = 'a';
 		const funcB = (function() {
 			const a = 20;
 			return async () => a;
 		})();
+    funcB._name = 'b';
 
-		const memoizedA = memoize(funcA);
-		const memoizedB = memoize(funcB);
+		const memoizedA = memoize(funcA, {});
+		const memoizedB = memoize(funcB, {});
 		const result1 = await memoizedA();
 		result1.should.eql(10);
 
 		const result2 = await memoizedB();
 		result2.should.eql(20);
-
-		memoizePkg.uuid = hackedUUID; // replace it
 	});
 });

@@ -1,13 +1,16 @@
 'use strict';
 const redis = require('ioredis');
 const crypto = require('crypto');
-const uuid = require('node-uuid');
 const zlib = require('zlib');
 const util = require('util');
 const Promise = require('bluebird');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
+const undefinedMarker = '_$$_undefined';
+const nullMarker = '_$$_null';
+const internalNotFoundInRedis = '_$$_empty';
+const errorMarkerKey = '_$$_error';
 
 module.exports = function createMemoizeFunction(client, options) {
   options = options || {};
@@ -36,23 +39,22 @@ module.exports = function createMemoizeFunction(client, options) {
 };
 
 // Exported so it can be overridden
-module.exports.uuid = function() {
-  return uuid.v4();
+module.exports.getFunctionKey = function(fn, options = {}) {
+  const name = options.name || fn._name;
+  if (!name) throw new Error("Unable to determine memoization name for function: " + fn);
+  return name;
 };
 
 module.exports.hash = function(args) {
   return crypto.createHash('sha1').update(JSON.stringify(args)).digest('hex');
 };
 
-function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
-  // We need to just uniquely identify this function, no way in hell are we going to try
-  // to make different memoize calls of the same function actually match up (and save the key).
-  // It's too hard to do that considering so many functions can look identical (wrappers, say, of promises)
-  // yet be very different. This guid() seems to do the trick.
-  let functionKey = module.exports.uuid(fn);
+function memoizeFn(client, options, keyNamespace, fn, memoOptions = {}) {
+  let functionKey = module.exports.getFunctionKey(fn, memoOptions);
+  let {timeLabel, ttl} = memoOptions;
   let ttlfn;
 
-  if(typeof ttl === 'function') {
+  if (typeof ttl === 'function') {
     ttlfn = ttl;
   } else {
     if (!ttl) ttl = options.default_ttl;
@@ -79,7 +81,8 @@ function memoizeFn(client, options, keyNamespace, fn, ttl, timeLabel) {
     }
 
     if (memoValue instanceof Error) throw memoValue; // we memoized an error.
-    if (memoValue != null) return memoValue; // we memoized something we want to return;
+    // We return an internal marker if this thing was actually not found, versus just null
+    if (memoValue !== internalNotFoundInRedis) return memoValue;
 
     try {
       // TODO lock; first attempt to get directly, if empty, then get lock and try again, only then do we run fn
@@ -107,7 +110,7 @@ function reviver (key, value) {
     return new Date(value);
   }
   // Revive errors
-  else if (value && value.$__memoized_error) {
+  else if (value && value.hasOwnProperty(errorMarkerKey)) {
     var err = new Error(value.message);
     err.stack = value.stack;
     err.name = value.name;
@@ -121,10 +124,16 @@ function reviver (key, value) {
 async function getKeyFromRedis(client, keyNamespace, fnKey, argsHash) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
   if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+
   let value = await compressedGet(client, [keyNamespace, fnKey, argsHash].join(':'));
-  if (value instanceof Buffer) value = value.toString();
-  if (value == null || value === '') return value;
-  return JSON.parse(value, reviver);
+
+  // Coerce back
+  if (value instanceof Buffer) value = value.toString(); // redis/ioredis compat
+  if (value === null) return internalNotFoundInRedis;
+  else if (value === undefinedMarker) return undefined;
+  else if (value === nullMarker) return null;
+  else if (value === '') return value;
+  else return JSON.parse(value, reviver);
 }
 
 async function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl) {
@@ -132,16 +141,23 @@ async function writeKeyToRedis(client, keyNamespace, fnKey, argsHash, value, ttl
   // Don't bother writing if ttl is 0.
   if (ttl === 0) return;
 
-  // If the value was an error, we need to do some herky-jerky stringifying.
-  if (value instanceof Error) {
+  // Convert a couple of placeholder values so we can distinguish between a value that is null/undefined,
+  // and the key not found.
+  let serializedValue;
+  if (value === undefined) {
+    serializedValue = undefinedMarker;
+  } else if (value === null) {
+    serializedValue = nullMarker;
+  } else if (value instanceof Error) {
     // Mark errors so we can revive them
-    value.$__memoized_error = true;
+    value[errorMarkerKey] = true;
     // Seems to do pretty well on errors
-    value = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', '$__memoized_error']);
+    serializedValue = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', errorMarkerKey]);
   } else {
-    value = JSON.stringify(value);
+    serializedValue = JSON.stringify(value);
   }
-  return compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, value);
+
+  return compressedPSetX(client, [keyNamespace, fnKey, argsHash].join(':'), ttl, serializedValue);
 }
 
 function isReady(client) {
