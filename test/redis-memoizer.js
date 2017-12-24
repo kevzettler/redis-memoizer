@@ -81,23 +81,43 @@ describe('redis-memoizer', () => {
     await clearCache(function2, ['y']);
   });
 
-  xit('should prevent a cache stampede', async () => {
-    const functionDelayTime = 10;
-    const iterationCount = 10;
+  async function stampede(options, memoizerOptions, memoizeOptions) {
+    if (!options.delayTime || !options.iters) throw new Error('bad args', options);
     let callCount = 0;
+    const do_memoize = memoizePkg(client, Object.assign({}, memoizerOptions, {
+      memoize_key_namespace: Date.now(),
+    }));
 
     const fn = async () => {
       callCount++;
-      await Promise.delay(functionDelayTime);
+      await Promise.delay(options.delayTime);
     };
-    const memoized = memoize(fn, {name: 'fn1'});
+    const memoized = do_memoize(fn, memoizeOptions);
 
     let start = Date.now();
-    await Promise.all([ ...Array(iterationCount).keys() ].map(() => memoized()));
-    (Date.now() - start < functionDelayTime * iterationCount).should.be.true;
+    await Promise.all([ ...Array(options.iters).keys() ].map(() => memoized()));
+    const duration = Date.now() - start;
     callCount.should.equal(1);
-
     await clearCache(fn);
+    return duration;
+  }
+
+  it('should prevent a cache stampede (slow lock)', async () => {
+    const options = {delayTime: 10, iters: 10};
+    const duration = await stampede(options, {}, {lock_retry_delay: 50, name: 'fn_lock_slow'});
+    (duration).should.be.above(options.delayTime * options.iters);
+  });
+
+  it('should prevent a cache stampede (fast lock)', async () => {
+    const options = {delayTime: 10, iters: 10};
+    const duration = await stampede(options, {lock_retry_delay: 1}, {name: 'fn_lock_fast'});
+    (duration).should.be.below(options.delayTime * options.iters);
+  });
+
+  it('should prevent a cache stampede (low lock timeout)', async () => {
+    const options = {delayTime: 10, iters: 10};
+    const duration = await stampede(options, {lock_retry_delay: 1}, {name: 'fn_lock_fast', lock_timeout: 20});
+    (duration).should.be.below(40);
   });
 
   it(`should respect 'this'`, async () => {
@@ -108,7 +128,7 @@ describe('redis-memoizer', () => {
     };
 
     const obj = new Obj();
-    const memoizedY = memoize(obj.y, {name: 'fn1'}).bind(obj);
+    const memoizedY = memoize(obj.y, {name: 'fn_this'}).bind(obj);
 
     (await memoizedY()).should.equal(1);
 
