@@ -29,7 +29,7 @@ const defaultOptions = {
   memoize_key_namespace: null,
   // How often to spin on the lock
   lock_retry_delay: 50,
-  error_logging: process.env.NODE_ENV !== 'production',
+  error_logging: (client, key) => process.env.NODE_ENV !== 'production',
 };
 
 module.exports = function createMemoizeFunction(client, options = {}) {
@@ -95,7 +95,9 @@ function memoizeFn(client, options, lock, fn,
       const result = await fn.apply(this, args);
       // Write the key, but don't await on it
       writeKeyToRedis(client, key, result, ttlfn(result)).catch((err) => {
-        if (options.error_logging) console.error(err.message);
+        if (options.error_logging(client, key)) {
+          console.error(`Error writing ${key}:`, err);
+        }
       });
 
       return result;
@@ -117,7 +119,9 @@ async function doLookup(client, key, timeout, options) {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key)).timeout(timeout);
   } catch (err) {
     // Continue on
-    if (options.error_logging) console.error(err.message);
+    if (options.error_logging(client, key)) {
+      console.error(`Error getting ${key} with timeout ${timeout}:`, err);
+    }
     return internalNotFoundInRedis;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.

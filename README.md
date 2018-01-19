@@ -80,7 +80,9 @@ const memoize = require("redis-memoizer")(redisClient, {
 	memoize_key_namespace: null,
 	// How often to spin on the lock
 	lock_retry_delay: 50,
-	error_logging: process.env.NODE_ENV !== 'production',
+	// A function returning whether or not to log an error. The key of the lookup/write and the redis client
+	// are passed in to allow for custom logic.
+	error_logging: (client, key) => process.env.NODE_ENV !== 'production',
 });
 ```
 
