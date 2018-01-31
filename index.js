@@ -29,26 +29,42 @@ const defaultOptions = {
   memoize_key_namespace: null,
   // How often to spin on the lock
   lock_retry_delay: 50,
-  error_logging: (client, key) => process.env.NODE_ENV !== 'production',
+  // Error logger, arity is (err, client, key)
+  on_error: null // *must* be implemented
 };
 
 module.exports = function createMemoizeFunction(client, options = {}) {
   const typ = clientTyp(client);
-  if (!typ) {
-    throw new Error('Pass a Redis client as the first argument.');
-  } else if (typ === 'node_redis') {
-    if (!client.getAsync) {
-      throw new Error('Node_Redis clients must be promisified. Please use Bluebird to do this.');
-    }
-    if (!client.options.return_buffers) {
-      throw new Error('A Node_Redis client passed to the memoizer must have the option `return_buffers` set to true.');
-    }
-  }
   options = Object.assign({}, defaultOptions, options);
 
   // Allow custom namespaces, e.g. by git revision.
   options.keyNamespace = `memos${options.memoize_key_namespace ? ':' + options.memoize_key_namespace : ''}`;
   const lock = makeLockFn(client, options.lock_retry_delay);
+
+  // Validation
+  try {
+    if (!typ) {
+      throw new Error('Pass a Redis client as the first argument.');
+    } else if (typ === 'node_redis') {
+      if (!client.getAsync) {
+        throw new Error('Node_Redis clients must be promisified. Please use Bluebird to do this.');
+      }
+      if (!client.options.return_buffers) {
+        throw new Error('A Node_Redis client passed to the memoizer must have the option `return_buffers` set to true.');
+      }
+    }
+
+    if (options.error_logging) {
+      throw new Error('The "error_logging" var has been replaced with a more standard ' +
+        '"on_error(err, client, key) callback." in 4.0');
+    }
+    if (typeof options.on_error !== 'function') {
+      throw new Error('An error fn of the arity (err, client, key) must be passed as an option.');
+    }
+  } catch (e) {
+    e.message = `Redis-Memoizer: ${e.message}`;
+    throw e;
+  }
 
   return memoizeFn.bind(null, client, options, lock);
 };
@@ -95,9 +111,8 @@ function memoizeFn(client, options, lock, fn,
       const result = await fn.apply(this, args);
       // Write the key, but don't await on it
       writeKeyToRedis(client, key, result, ttlfn(result)).catch((err) => {
-        if (options.error_logging(client, key)) {
-          console.error(`Error writing ${key}:`, err);
-        }
+        err.message = `Redis-Memoizer: Error writing key "${key}": ${err.message}`;
+        options.on_error(err, client, key);
       });
 
       return result;
@@ -118,10 +133,9 @@ async function doLookup(client, key, timeout, options) {
   try {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key)).timeout(timeout);
   } catch (err) {
+    err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
+    options.on_error(err, client, key);
     // Continue on
-    if (options.error_logging(client, key)) {
-      console.error(`Error getting ${key} with timeout ${timeout}:`, err);
-    }
     return internalNotFoundInRedis;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
@@ -149,7 +163,7 @@ function reviver(key, value) {
 
 async function getKeyFromRedis(client, key) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
-  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+  if (!isReady(client)) throw new Error('Not connected.');
 
   let value = await compressedGet(client, key);
 
@@ -163,7 +177,7 @@ async function getKeyFromRedis(client, key) {
 }
 
 async function writeKeyToRedis(client, key, value, ttl) {
-  if (!isReady(client)) throw new Error('Redis-Memoizer: Not connected.');
+  if (!isReady(client)) throw new Error('Not connected.');
 
   // Don't bother writing if ttl is 0.
   if (ttl === 0) return;

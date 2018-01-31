@@ -18,6 +18,7 @@ async function delKeys(client, keyPattern) {
 function makeDefaultOptions() {
   return {
     memoize_key_namespace: key_namespace,
+    on_error: (err) => { throw err; },
   };
 }
 
