@@ -2,22 +2,23 @@ const crypto = require('crypto');
 const should = require('should');
 const Promise = require('bluebird');
 
-const key_namespace = Date.now();
 const memoizePkg = require('../');
 const pkgJSON = JSON.stringify(require('../package.json'));
 const {exec} = require('../redisCompat');
 const PORT = parseInt(process.env.PORT) || 6379;
 
-const hash = string => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
-
-function clearCache(client, fn, args = []) {
-  const stringified = JSON.stringify(args);
-  return exec(client, 'del', ['memos', key_namespace, memoizePkg.getFunctionKey(fn, {}), hash(stringified)].join(':'));
-}
+const hash = (string) => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
+const key_namespace = Date.now();
 
 async function delKeys(client, keyPattern) {
   const keys = await exec(client, 'keys', keyPattern);
-  return await Promise.map(keys, (key) => exec(client, 'del', key));
+  return await Promise.map(keys, (key) => exec(client, 'del', key.toString()));
+}
+
+function makeDefaultOptions() {
+  return {
+    memoize_key_namespace: key_namespace,
+  };
 }
 
 describe('redis-memoizer', () => {
@@ -25,15 +26,15 @@ describe('redis-memoizer', () => {
   let client;
   const {REDIS_TYP} = process.env;
   if (REDIS_TYP === 'ioredis') {
-    client = new require('ioredis')({port: PORT});
-  } else {
     const Redis = REDIS_TYP === 'fakeredis' ? require('fakeredis') : require('redis');
     Promise.promisifyAll(Redis.RedisClient.prototype);
     Promise.promisifyAll(Redis.Multi.prototype);
     client = Redis.createClient(PORT, 'localhost', {return_buffers: true});
     if (REDIS_TYP === 'fakeredis') client.options.return_buffers = true; // workaround check, it sets opts badly
   }
-  let memoize = memoizePkg(client, {memoize_key_namespace: key_namespace, memoize_errors_when: () => false});
+  let memoize = memoizePkg(client, {
+    ...makeDefaultOptions(),
+  });
 
   const originalMemoize = memoize;
   // Record the name so we can clear this out
@@ -43,14 +44,13 @@ describe('redis-memoizer', () => {
     return originalMemoize.apply(this, arguments);
   };
 
-  before(async () => {
-    await delKeys(client, key_namespace + ':*');
+	afterEach(async () => {
+    await delKeys(client, `memos:${key_namespace}:*`);
   });
 
-	after(async () => {
-    await delKeys(client, key_namespace + ':*');
+  after(() => {
 		client.end(true);
-	});
+  });
 
   it('should memoize a value correctly', async () => {
     const functionDelayTime = 10;
@@ -75,8 +75,6 @@ describe('redis-memoizer', () => {
     val2.should.equal(2);
     (Date.now() - start < functionDelayTime).should.be.true;		// Second call should be faster
     callCount.should.equal(1);
-
-    await clearCache(client, functionToMemoize, [1, 2]);
   });
 
   it('should memoize large values (gzip)', async () => {
@@ -94,8 +92,6 @@ describe('redis-memoizer', () => {
     const json2 = await memoized(1);
     json2.should.equal(pkgJSON + 1);
     callCount.should.equal(1);
-
-    await clearCache(client, functionToMemoize, [1]);
   });
 
   it('should memoize separate function separately', async () => {
@@ -108,9 +104,6 @@ describe('redis-memoizer', () => {
     (await memoizedFn1('x')).should.equal(1);
     (await memoizedFn2('y')).should.equal(2);
     (await memoizedFn1('x')).should.equal(1);
-
-    await clearCache(client, function1, ['x']);
-    await clearCache(client, function2, ['y']);
   });
 
   it('should memoize same function with different args separately', async () => {
@@ -121,9 +114,6 @@ describe('redis-memoizer', () => {
     (await memoizedFn('x')).should.equal('x');
     (await memoizedFn('y')).should.equal('y');
     (await memoizedFn('x')).should.equal('x');
-
-    await clearCache(client, fn, ['x']);
-    await clearCache(client, fn, ['y']);
   });
 
   async function stampede(options, memoizerOptions, memoizeOptions) {
@@ -132,9 +122,10 @@ describe('redis-memoizer', () => {
 
     if (!options.delayTime || !options.iters) throw new Error('bad args', options);
     let callCount = 0;
-    const do_memoize = memoizePkg(client, Object.assign({}, memoizerOptions, {
-      memoize_key_namespace: Date.now(),
-    }));
+    const do_memoize = memoizePkg(client, {
+      ...makeDefaultOptions(),
+      ...memoizerOptions,
+    });
 
     const fn = async () => {
       callCount++;
@@ -146,7 +137,6 @@ describe('redis-memoizer', () => {
     await Promise.all([ ...Array(options.iters).keys() ].map(() => memoized()));
     let duration = Date.now() - start;
     callCount.should.equal(1);
-    await clearCache(client, fn);
     return duration;
   }
 
@@ -164,7 +154,7 @@ describe('redis-memoizer', () => {
 
   it('should prevent a cache stampede (low lock timeout)', async () => {
     const options = {delayTime: 10, iters: 10};
-    const duration = await stampede(options, {lock_retry_delay: 1}, {name: 'fn_lock_fast', lock_timeout: 20});
+    const duration = await stampede(options, {lock_retry_delay: 1}, {name: 'fn_lock_fast2', lock_timeout: 20});
     (duration).should.be.below(50);
   });
 
@@ -179,8 +169,6 @@ describe('redis-memoizer', () => {
     const memoizedY = memoize(obj.y, {name: 'fn_this'}).bind(obj);
 
     (await memoizedY()).should.equal(1);
-
-    await clearCache(client, Obj.prototype.y);
   });
 
   it('should respect the ttl', async () => {
@@ -204,8 +192,6 @@ describe('redis-memoizer', () => {
     start = Date.now();
     await memoized();
     (Date.now() - start >= functionDelayTime).should.be.true;
-
-    await clearCache(client, fn);
   });
 
   it('should allow ttl to be a function', async () => {
@@ -229,14 +215,13 @@ describe('redis-memoizer', () => {
     start = Date.now();
     await memoized();
     (Date.now() - start >= functionDelayTime).should.be.true;
-
-    await clearCache(client, fn);
   });
 
   // FIXME this test is flaky when failing
   it('should gracefully fail lookup timeout', async () => {
     const fn = () => 1;
     const do_memoize = memoizePkg(client, {
+      ...makeDefaultOptions(),
       lookup_timeout: -1,
     });
 
@@ -244,8 +229,6 @@ describe('redis-memoizer', () => {
 
     const res = await memoized();
     res.should.equal(1);
-
-    await clearCache(client, fn);
   });
 
   it('should work if complex types are accepted and returned', async () => {
@@ -268,8 +251,6 @@ describe('redis-memoizer', () => {
     (Date.now() - start <= functionDelayTime).should.be.true;
     arg1.should.eql({ input: 'data' });
     some.should.eql(['other', 'data']);
-
-    await clearCache(client, fn, [{input: "data"}]);
   });
 
   it('should memoize even if result is falsy', async () => {
@@ -285,12 +266,10 @@ describe('redis-memoizer', () => {
       (await memoized() === falsyValue).should.be.true;
       (await memoized() === falsyValue).should.be.true;  // Repeated, presumably cache-hit
       callCount.should.equal(1);  // Verify cache hit
-
-      await clearCache(client, fn);
     }));
   });
 
-  it(`shouldn't memoize errors`, async () => {
+  it(`shouldn't memoize errors by default`, async () => {
     let callCount = 0;
     const fn = async () => {
       callCount++;
@@ -337,11 +316,9 @@ describe('redis-memoizer', () => {
 		val2.should.be.an.instanceOf(Date);
 		val1.should.eql(date1);
 		val2.should.eql(date2);
-
-		await clearCache(client, fn, date1);
 	});
 
-	it('should memoize errors', async function() {
+	it('should memoize errors when indicated', async function() {
 		let hits = 0;
 		async function errorFunction() {
 			hits++;
@@ -349,7 +326,7 @@ describe('redis-memoizer', () => {
 		}
 
 		const do_memoize = memoizePkg(client, {
-			memoize_key_namespace: Date.now(),
+      ...makeDefaultOptions(),
 			memoize_errors_when: () => true,
 		});
 
@@ -368,7 +345,7 @@ describe('redis-memoizer', () => {
 		}
 
 		const do_memoize = memoizePkg(client, {
-			memoize_key_namespace: Date.now(),
+      ...makeDefaultOptions(),
 			memoize_errors_when: function(err) {
 				return err.message !== 'Hit Error!';
 			}
@@ -376,7 +353,7 @@ describe('redis-memoizer', () => {
 
 		// First error won't be memoized, so expect hits to increment on subsequent calls.
 		// Second error will, so hits will freeze there.
-		const memoized = do_memoize(errorFunction, {name: 'fn1', ttl: 1000});
+		const memoized = do_memoize(errorFunction, {name: 'fn2', ttl: 1000});
 		await memoized().should.be.rejectedWith(Error, { message: 'Hit Error!' });
 		hits.should.eql(1);
 
