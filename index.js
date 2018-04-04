@@ -141,7 +141,9 @@ async function doLookup(client, key, timeout, options) {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key)).timeout(timeout);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
-    options.on_error(err, client, key);
+    if (err.type !== 'TimeoutError') {
+      options.on_error(err, client, key);
+    }
     // Continue on
     return MAGIC.notFound;
   }
