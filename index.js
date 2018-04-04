@@ -14,6 +14,8 @@ const MAGIC = {
   null: '_$$_null',
   notFound: '_$$_empty',
   error: '_$$_error',
+  // Used for serializing errors
+  error_keys: ['message', 'type', 'name', 'stack'],
 };
 const defaultOptions = {
   // Properties prefixed with `default_` can be overridden when creating each memoized function.
@@ -198,7 +200,7 @@ async function writeKeyToRedis(client, key, value, ttl) {
     // Mark errors so we can revive them
     value[MAGIC.error] = true;
     // Seems to do pretty well on errors
-    serializedValue = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', MAGIC.error]);
+    serializedValue = JSON.stringify(value, MAGIC.error_keys.concat([MAGIC.error]));
   } else {
     serializedValue = JSON.stringify(value);
   }
