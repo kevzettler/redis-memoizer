@@ -9,6 +9,11 @@ const PORT = parseInt(process.env.PORT) || 6379;
 
 const hash = (string) => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 const key_namespace = Date.now();
+const TYPS = {
+  ioredis: 'ioredis',
+  node_redis: 'redis',
+  fakeredis: 'fakeredis',
+};
 
 async function delKeys(client, keyPattern) {
   const keys = await exec(client, 'keys', keyPattern);
@@ -22,17 +27,18 @@ function makeDefaultOptions() {
   };
 }
 
+
 describe('redis-memoizer', () => {
 
-  let client;
-  const {REDIS_TYP} = process.env;
-  if (REDIS_TYP === 'ioredis') {
-    const Redis = REDIS_TYP === 'fakeredis' ? require('fakeredis') : require('redis');
+  const REDIS_TYP = TYPS[process.env.REDIS_TYP] || 'ioredis';
+  const Redis = require(REDIS_TYP);
+  if (REDIS_TYP !== 'ioredis') {
     Promise.promisifyAll(Redis.RedisClient.prototype);
     Promise.promisifyAll(Redis.Multi.prototype);
-    client = Redis.createClient(PORT, 'localhost', {return_buffers: true});
-    if (REDIS_TYP === 'fakeredis') client.options.return_buffers = true; // workaround check, it sets opts badly
   }
+  const client = Redis.createClient(PORT, 'localhost', {return_buffers: true});
+  if (REDIS_TYP === 'fakeredis') client.options.return_buffers = true; // workaround check, it sets opts badly
+
   let memoize = memoizePkg(client, {
     ...makeDefaultOptions(),
   });
@@ -44,6 +50,13 @@ describe('redis-memoizer', () => {
     fn._name = String(Math.random()) + memoizePkg.getFunctionKey(fn, options);
     return originalMemoize.apply(this, arguments);
   };
+
+  // Wait for connection
+  before(async () => {
+    if (REDIS_TYP === 'ioredis' && client.status !== 'connect') {
+      return new Promise((resolve) => client.on('connect', resolve));
+    }
+  });
 
 	afterEach(async () => {
     await delKeys(client, `memos:${key_namespace}:*`);
