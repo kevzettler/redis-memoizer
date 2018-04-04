@@ -7,11 +7,14 @@ const Promise = require('bluebird');
 const {clientTyp, exec, isReady} = require('./redisCompat');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
-const GZIP_MAGIC_LENGTH = GZIP_MAGIC.length;
-const undefinedMarker = '_$$_undefined';
-const nullMarker = '_$$_null';
-const internalNotFoundInRedis = '_$$_empty';
-const errorMarkerKey = '_$$_error';
+const MAGIC = {
+  gzip: GZIP_MAGIC,
+  gzip_length: GZIP_MAGIC.length,
+  undefined: '_$$_undefined',
+  null: '_$$_null',
+  notFound: '_$$_empty',
+  error: '_$$_error',
+};
 const defaultOptions = {
   // Properties prefixed with `default_` can be overridden when creating each memoized function.
   // How long to persist memoized results to Redis. This can be overridden per-fn.
@@ -79,6 +82,8 @@ module.exports.hash = function(args) {
   return crypto.createHash('sha1').update(JSON.stringify(args)).digest('hex');
 };
 
+module.exports.MAGIC = MAGIC;
+
 function memoizeFn(client, options, lock, fn,
                    {ttl = options.default_ttl, lock_timeout = options.default_lock_timeout, name} = {}) {
   let functionKey = module.exports.getFunctionKey(fn, name);
@@ -95,7 +100,7 @@ function memoizeFn(client, options, lock, fn,
     // Attempt to get the result from redis.
     const memoValue = await doLookup(client, key, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
-    if (memoValue !== internalNotFoundInRedis) return memoValue;
+    if (memoValue !== MAGIC.notFound) return memoValue;
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
@@ -104,7 +109,7 @@ function memoizeFn(client, options, lock, fn,
     try {
       // After we've acquired the lock, check if the key was populated in the meantime.
       const memoValueRetry = await doLookup(client, key, timeoutMs, options);
-      if (memoValueRetry !== internalNotFoundInRedis) return memoValueRetry;
+      if (memoValueRetry !== MAGIC.notFound) return memoValueRetry;
 
       // Run the fn, save the result
       didOriginalFn = true;
@@ -136,7 +141,7 @@ async function doLookup(client, key, timeout, options) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
     options.on_error(err, client, key);
     // Continue on
-    return internalNotFoundInRedis;
+    return MAGIC.notFound;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
   return memoValue;
@@ -150,7 +155,7 @@ function reviver(key, value) {
     return new Date(value);
   }
   // Revive errors
-  else if (value && value.hasOwnProperty(errorMarkerKey)) {
+  else if (value && value.hasOwnProperty(MAGIC.error)) {
     var err = new Error(value.message);
     err.stack = value.stack;
     err.name = value.name;
@@ -169,9 +174,9 @@ async function getKeyFromRedis(client, key) {
 
   // Coerce back
   if (value instanceof Buffer) value = value.toString(); // redis/ioredis compat
-  if (value == null) return internalNotFoundInRedis;
-  else if (value === undefinedMarker) return undefined;
-  else if (value === nullMarker) return null;
+  if (value == null) return MAGIC.notFound;
+  else if (value === MAGIC.undefined) return undefined;
+  else if (value === MAGIC.null) return null;
   else if (value === '') return value;
   else return JSON.parse(value, reviver);
 }
@@ -186,14 +191,14 @@ async function writeKeyToRedis(client, key, value, ttl) {
   // and the key not found.
   let serializedValue;
   if (value === undefined) {
-    serializedValue = undefinedMarker;
+    serializedValue = MAGIC.undefined;
   } else if (value === null) {
-    serializedValue = nullMarker;
+    serializedValue = MAGIC.null;
   } else if (value instanceof Error) {
     // Mark errors so we can revive them
-    value[errorMarkerKey] = true;
+    value[MAGIC.error] = true;
     // Seems to do pretty well on errors
-    serializedValue = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', errorMarkerKey]);
+    serializedValue = JSON.stringify(value, ['message', 'arguments', 'type', 'name', 'stack', MAGIC.error]);
   } else {
     serializedValue = JSON.stringify(value);
   }
@@ -226,13 +231,13 @@ async function gzip(value) {
   if (value == null || value.length < 500) return value;
 
   const zippedVal = await gzipAsync(value);
-  return Buffer.concat([GZIP_MAGIC, zippedVal], zippedVal.length + GZIP_MAGIC_LENGTH);
+  return Buffer.concat([MAGIC.gzip, zippedVal], zippedVal.length + MAGIC.gzip_length);
 }
 
 async function gunzip(value, cb) {
   // Check for GZIP MAGIC, if there unzip it.
-  if (value instanceof Buffer && value.slice(0, GZIP_MAGIC_LENGTH).equals(GZIP_MAGIC)) {
-    return gunzipAsync(value.slice(GZIP_MAGIC_LENGTH));
+  if (value instanceof Buffer && value.slice(0, MAGIC.gzip_length).equals(MAGIC.gzip)) {
+    return gunzipAsync(value.slice(MAGIC.gzip_length));
   } else {
     return value;
   }
