@@ -12,11 +12,13 @@ const MAGIC = {
   gzip_length: GZIP_MAGIC.length,
   undefined: '_$$_undefined',
   null: '_$$_null',
-  notFound: '_$$_empty',
+  not_found: '_$$_empty',
   error: '_$$_error',
-  // Used for serializing errors
-  error_keys: ['message', 'type', 'name', 'stack'],
 };
+
+// Used as filter function in JSON.parse so it properly restores dates
+const reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
+
 const defaultOptions = {
   // Properties prefixed with `default_` can be overridden when creating each memoized function.
   // How long to persist memoized results to Redis. This can be overridden per-fn.
@@ -35,10 +37,14 @@ const defaultOptions = {
   // How often to spin on the lock
   lock_retry_delay: 50,
   // Error logger, arity is (err, client, key)
-  on_error: null // *must* be implemented
+  on_error: null, // *must* be implemented
+  // Used for reviving JSON values
+  deserialize_value: defaultDeserializeValue,
+  serialize_value: defaultSerializeValue,
+  error_serialization_keys: ['name', 'stack'],
 };
 
-module.exports = function createMemoizeFunction(client, options = {}) {
+function createMemoizeFunction(client, options = {}) {
   const typ = clientTyp(client);
   options = Object.assign({}, defaultOptions, options);
 
@@ -72,19 +78,16 @@ module.exports = function createMemoizeFunction(client, options = {}) {
   }
 
   return memoizeFn.bind(null, client, options, lock);
-};
+}
 
-// Exported so it can be overridden
-module.exports.getFunctionKey = function(fn, name = fn._name) {
+function getFunctionKey(fn, name = fn._name) {
   if (!name) throw new Error("Unable to determine memoization name for function: " + fn);
   return name;
-};
+}
 
-module.exports.hash = function(args) {
+function hash(args) {
   return crypto.createHash('sha1').update(JSON.stringify(args)).digest('hex');
-};
-
-module.exports.MAGIC = MAGIC;
+}
 
 function memoizeFn(client, options, lock, fn,
                    {ttl = options.default_ttl, lock_timeout = options.default_lock_timeout, name} = {}) {
@@ -102,7 +105,7 @@ function memoizeFn(client, options, lock, fn,
     // Attempt to get the result from redis.
     const memoValue = await doLookup(client, key, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
-    if (memoValue !== MAGIC.notFound) return memoValue;
+    if (memoValue !== MAGIC.not_found) return memoValue;
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
@@ -111,13 +114,14 @@ function memoizeFn(client, options, lock, fn,
     try {
       // After we've acquired the lock, check if the key was populated in the meantime.
       const memoValueRetry = await doLookup(client, key, timeoutMs, options);
-      if (memoValueRetry !== MAGIC.notFound) return memoValueRetry;
+      if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
 
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
       // Write the key, but don't await on it
-      writeKeyToRedis(client, key, result, ttlfn(result)).catch((err) => {
+      writeKeyToRedis(client, key, result, ttlfn(result), options)
+      .catch((err) => {
         err.message = `Redis-Memoizer: Error writing key "${key}": ${err.message}`;
         options.on_error(err, client, key);
       });
@@ -126,7 +130,7 @@ function memoizeFn(client, options, lock, fn,
     } catch (e) {
       // original function errored, should we memoize that?
       if (didOriginalFn && options.memoize_errors_when(e)) {
-        await writeKeyToRedis(client, key, e, ttlfn(e));
+        await writeKeyToRedis(client, key, e, ttlfn(e), options);
       }
       throw e;
     } finally {
@@ -138,39 +142,20 @@ function memoizeFn(client, options, lock, fn,
 async function doLookup(client, key, timeout, options) {
   let memoValue;
   try {
-    memoValue = await Promise.resolve(getKeyFromRedis(client, key)).timeout(timeout);
+    memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
     if (err.name !== 'TimeoutError') {
       options.on_error(err, client, key);
     }
     // Continue on
-    return MAGIC.notFound;
+    return MAGIC.not_found;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
   return memoValue;
 }
 
-// Used as filter function in JSON.parse so it properly restores dates
-var reISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*))(?:Z|(\+|-)([\d|:]*))?$/;
-function reviver(key, value) {
-  // Revive dates
-  if (typeof value === 'string' && reISO.exec(value)) {
-    return new Date(value);
-  }
-  // Revive errors
-  else if (value && value.hasOwnProperty(MAGIC.error)) {
-    var err = new Error(value.message);
-    err.stack = value.stack;
-    err.name = value.name;
-    err.type = value.type;
-    err.arguments = value.arguments;
-    return err;
-  }
-  return value;
-}
-
-async function getKeyFromRedis(client, key) {
+async function getKeyFromRedis(client, key, options) {
   // Bail if not connected; don't wait for reconnect, that's probably slower than just computing.
   if (!isReady(client)) throw new Error('Not connected.');
 
@@ -178,19 +163,35 @@ async function getKeyFromRedis(client, key) {
 
   // Coerce back
   if (value instanceof Buffer) value = value.toString(); // redis/ioredis compat
-  if (value == null) return MAGIC.notFound;
-  else if (value === MAGIC.undefined) return undefined;
-  else if (value === MAGIC.null) return null;
-  else if (value === '') return value;
-  else return JSON.parse(value, reviver);
+  if (value == null) return MAGIC.not_found;
+  return options.deserialize_value(value, options);
 }
 
-async function writeKeyToRedis(client, key, value, ttl) {
-  if (!isReady(client)) throw new Error('Not connected.');
+function defaultDeserializeValue(value, options) {
+  if (value === MAGIC.undefined) return undefined;
+  else if (value === MAGIC.null) return null;
+  else if (value === '') return value;
+  else return JSON.parse(value, reviver.bind(null, options));
+}
 
-  // Don't bother writing if ttl is 0.
-  if (ttl === 0) return;
+function reviver(options,key, value) {
+  // Revive dates
+  if (typeof value === 'string' && reISO.exec(value)) {
+    return new Date(value);
+  }
+  // Revive errors
+  else if (value && value.hasOwnProperty(MAGIC.error)) {
+    const err = new Error(value.message);
+    for (let i = 0; i < options.error_serialization_keys.length; i++) {
+      const key = options.error_serialization_keys[i];
+      err[key] = value[key];
+    }
+    return err;
+  }
+  return value;
+}
 
+function defaultSerializeValue(value, options) {
   // Convert a couple of placeholder values so we can distinguish between a value that is null/undefined,
   // and the key not found.
   let serializedValue;
@@ -202,11 +203,20 @@ async function writeKeyToRedis(client, key, value, ttl) {
     // Mark errors so we can revive them
     value[MAGIC.error] = true;
     // Seems to do pretty well on errors
-    serializedValue = JSON.stringify(value, MAGIC.error_keys.concat([MAGIC.error]));
+    serializedValue = JSON.stringify(value, options.error_serialization_keys.concat(['message', MAGIC.error]));
   } else {
     serializedValue = JSON.stringify(value);
   }
+  return serializedValue;
+}
 
+async function writeKeyToRedis(client, key, value, ttl, options) {
+  if (!isReady(client)) throw new Error('Not connected.');
+
+  // Don't bother writing if ttl is 0.
+  if (ttl === 0) return;
+
+  const serializedValue = options.serialize_value(value, options);
   return compressedPSetX(client, key, ttl, serializedValue);
 }
 
@@ -246,5 +256,12 @@ async function gunzip(value) {
     return value;
   }
 }
+
+module.exports = createMemoizeFunction;
+// Exported so they can be overridden
+module.exports.hash = hash;
+module.exports.getFunctionKey = getFunctionKey;
 module.exports.gzip = gzip;
 module.exports.gunzip = gunzip;
+module.exports.MAGIC = MAGIC;
+module.exports.reISO = reISO;

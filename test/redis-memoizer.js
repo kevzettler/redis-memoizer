@@ -412,4 +412,76 @@ describe('redis-memoizer', () => {
 		const result2 = await memoizedB();
 		result2.should.eql(20);
 	});
+
+  it('Should allow overriding error_serialization_keys', async function() {
+    let counter = 0;
+    async function funcA() {
+      const err = new Error('wat');
+      err.foo = counter++;
+      throw err;
+    }
+
+    const do_memoize = memoizePkg(client, {
+      ...makeDefaultOptions(),
+      memoize_errors_when: function(err) {
+        return true;
+      },
+      error_serialization_keys: ['message', 'foo']
+    });
+
+    const memoizedA = do_memoize(funcA, {name: 'err_reviver', ttl: 10000});
+
+    async function verify() {
+      try {
+        await memoizedA();
+      } catch (e) {
+        e.message.should.eql('wat');
+        e.foo.should.eql(0);
+      }
+    }
+    await verify();
+    await verify();
+  });
+
+  it('Should allow overriding serialize_value', async function() {
+    let counter = 0;
+    async function funcA() {
+      return counter++;
+    }
+
+    const do_memoize = memoizePkg(client, {
+      ...makeDefaultOptions(),
+      serialize_value(value, options) {
+        return `"foo${value}"`;
+      },
+    });
+
+    const memoizedA = do_memoize(funcA, {name: 'err_reviver', ttl: 10000});
+
+    const value = await memoizedA();
+    value.should.eql(0);
+    const value2 = await memoizedA();
+    value2.should.eql('foo0');
+  });
+
+  it('Should allow overriding deserialize_value', async function() {
+    let counter = 0;
+    async function funcA() {
+      return counter++;
+    }
+
+    const do_memoize = memoizePkg(client, {
+      ...makeDefaultOptions(),
+      deserialize_value(value, options) {
+        return `bar${value}`;
+      },
+    });
+
+    const memoizedA = do_memoize(funcA, {name: 'err_reviver', ttl: 10000});
+
+    const value = await memoizedA();
+    value.should.eql(0);
+    const value2 = await memoizedA();
+    value2.should.eql('bar0');
+  });
 });

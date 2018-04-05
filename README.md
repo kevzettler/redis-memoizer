@@ -81,8 +81,23 @@ const memoize = require("redis-memoizer")(redisClient, {
 	// How often to spin on the lock
 	lock_retry_delay: 50,
 
-	// This must be implemented, below is an example
-	on_error: (err, client, key) => console.error(err)
+	// This is *required*, below is an example
+	on_error: (err, client, key) => console.error(err),
+
+	// Optional customizations. You don't have to touch these, but in certain
+	// cases it might be useful to. They're provided here so you don't have
+	// to fork the module to make these changes.
+
+	// Serialize a value to a string before sending to redis.
+	serialize_value(value, options) { ... },
+	// Given a string, deserialize back to a JS object.
+	deserialize_value(value, options) { ... },
+	// For convenience, the default (de)serialization methods reference these
+	// when dealing with errors. They are easy to override if you have
+	// custom attributes, like e.g. `statusCode`.
+	// 'message' is always present.
+	error_serialization_keys: ['name', 'stack']
+
 });
 ```
 
