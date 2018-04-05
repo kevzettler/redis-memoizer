@@ -233,7 +233,8 @@ describe('redis-memoizer', () => {
 
   // FIXME this test is flaky when failing
   it('should gracefully fail lookup timeout', async () => {
-    const fn = () => 1;
+    let counter = 0;
+    const fn = () => counter++;
     const do_memoize = memoizePkg(client, {
       ...makeDefaultOptions(),
       lookup_timeout: -1,
@@ -241,8 +242,20 @@ describe('redis-memoizer', () => {
 
     const memoized = do_memoize(fn, {name: 'timeout_fn', ttl: 1000});
 
+    // Hack to ensure this takes a while
+    const gzipOrig = memoizePkg.gzip;
+    memoizePkg.gzip = async function(value) {
+      await Promise.delay(10);
+      return value;
+    };
+
     const res = await memoized();
-    res.should.equal(1);
+    res.should.equal(0);
+    const res2 = await memoized();
+    res2.should.equal(1); // bc we didn't end up going to redis
+
+    // Restore
+    memoizePkg.gzip = gzipOrig;
   });
 
   it('should work if complex types are accepted and returned', async () => {

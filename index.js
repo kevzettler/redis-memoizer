@@ -222,11 +222,11 @@ async function compressedGet(client, key, cb) {
   // Have to use 'getBuffer' for ioredis
   if (clientTyp(client) === 'ioredis') zippedVal = await client.getBuffer(key);
   else zippedVal = await client.getAsync(key);
-  return gunzip(zippedVal);
+  return module.exports.gunzip(zippedVal);
 }
 
 async function compressedPSetX(client, key, ttl, value) {
-  const zippedVal = await gzip(value);
+  const zippedVal = await module.exports.gzip(value);
   return exec(client, 'set', key, zippedVal, 'PX', ttl);
 }
 
@@ -238,7 +238,7 @@ async function gzip(value) {
   return Buffer.concat([MAGIC.gzip, zippedVal], zippedVal.length + MAGIC.gzip_length);
 }
 
-async function gunzip(value, cb) {
+async function gunzip(value) {
   // Check for GZIP MAGIC, if there unzip it.
   if (value instanceof Buffer && value.slice(0, MAGIC.gzip_length).equals(MAGIC.gzip)) {
     return gunzipAsync(value.slice(MAGIC.gzip_length));
@@ -246,3 +246,5 @@ async function gunzip(value, cb) {
     return value;
   }
 }
+module.exports.gzip = gzip;
+module.exports.gunzip = gunzip;
