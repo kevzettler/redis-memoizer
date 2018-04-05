@@ -12,7 +12,7 @@
     "test-node_redis": "NODE_ENV=test REDIS_TYP=node_redis mocha",
     "test-fakeredis": "NODE_ENV=test REDIS_TYP=fakeredis mocha"
   },
-  "repository": "",
+  "repository": "https://github.com/bitmex/redis-memoizer",
   "contributors": [
     {
       "name": "Samuel Reed",
