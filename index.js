@@ -5,6 +5,7 @@ const util = require('util');
 const makeLockFn = require('./lock');
 const Promise = require('bluebird');
 const {clientTyp, exec, isReady} = require('./redisCompat');
+const EventEmitter = require('events');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const MAGIC = {
@@ -42,6 +43,7 @@ const defaultOptions = {
   deserialize_value: defaultDeserializeValue,
   serialize_value: defaultSerializeValue,
   error_serialization_keys: ['name', 'stack'],
+  emitter: new EventEmitter()
 };
 
 function createMemoizeFunction(client, options = {}) {
@@ -71,6 +73,9 @@ function createMemoizeFunction(client, options = {}) {
     }
     if (typeof options.on_error !== 'function') {
       throw new Error('An error fn of the arity (err, client, key) must be passed as an option.');
+    }
+    if(!(options.emitter instanceof EventEmitter)){
+      throw new Error('An emitterd passed to the memoizer must be an instance of EventEmitter');
     }
   } catch (e) {
     e.message = `Redis-Memoizer: ${e.message}`;
@@ -110,12 +115,13 @@ function memoizeFn(client, options, lock, fn,
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
     const unlock = await lock(key, lock_timeout);
+    if(unlock === null) options.emitter(`lock_timeout.${key}`);
     let didOriginalFn = false;
     try {
       // After we've acquired the lock, check if the key was populated in the meantime.
       const memoValueRetry = await doLookup(client, key, timeoutMs, options);
       if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
-
+      options.emitter.emit(`miss.${key}`);
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
@@ -143,10 +149,13 @@ async function doLookup(client, key, timeout, options) {
   let memoValue;
   try {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
+    options.emitter.emit(`hit.${key}`);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
     if (err.name !== 'TimeoutError') {
       options.on_error(err, client, key);
+    }else{
+      options.emitter.emit(`lookup_timeout.${key}`);
     }
     // Continue on
     return MAGIC.not_found;

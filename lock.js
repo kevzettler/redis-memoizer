@@ -8,7 +8,7 @@ const {exec} = require('./redisCompat');
 async function acquireLock(client, lockName, timeoutStamp, retryDelay) {
   try {
     const timeoutLeft = timeoutStamp - Date.now();
-    if (timeoutLeft <= 0) return;
+    if (timeoutLeft <= 0) return null;
     // Set an exclusive key. PX is timeout in ms, NX is don't set if already set.
     const result = await exec(client, 'set', lockName, '1', 'PX', timeoutLeft, 'NX');
     if (result.toString() !== 'OK') throw new Error('Lock not acquired.');
