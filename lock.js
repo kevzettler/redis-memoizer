@@ -9,7 +9,7 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) 
   try {
     const timeoutLeft = timeoutStamp - Date.now();
     if (timeoutLeft <= 0) {
-      if(emitter) emitter.emit('lock_timeout', lockName);
+      if(emitter) emitter.emit('lock_timeout', lockName.split('.')[1]);
       return;
     }
     // Set an exclusive key. PX is timeout in ms, NX is don't set if already set.
@@ -38,7 +38,7 @@ module.exports = function(client, options) {
       // Now that the task is done, if the lock would still exist, kill it
       options.emitter.emit(`unlock.${lockName}`);
       if (timeoutStamp > Date.now()) return exec(client, 'del', lockName);
-      if(options.emitter) options.emitter.emit('unlock', lockName, Date.now() - startTime);
+      if(options.emitter) options.emitter.emit('unlock', lockName.split('.')[1], Date.now() - startTime);
       return Promise.resolve();
     };
   };
