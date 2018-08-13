@@ -52,7 +52,7 @@ function createMemoizeFunction(client, options = {}) {
 
   // Allow custom namespaces, e.g. by git revision.
   options.keyNamespace = `memos${options.memoize_key_namespace ? ':' + options.memoize_key_namespace : ''}`;
-  const lock = makeLockFn(client, options.lock_retry_delay);
+  const lock = makeLockFn(client, options);
 
   // Validation
   try {
@@ -115,13 +115,12 @@ function memoizeFn(client, options, lock, fn,
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
     const unlock = await lock(key, lock_timeout);
-    if(unlock === null) options.emitter(`lock_timeout.${key}`);
     let didOriginalFn = false;
     try {
       // After we've acquired the lock, check if the key was populated in the meantime.
       const memoValueRetry = await doLookup(client, key, timeoutMs, options);
       if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
-      options.emitter.emit(`miss.${key}`);
+      options.emitter.emit('miss', key);
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
@@ -146,21 +145,24 @@ function memoizeFn(client, options, lock, fn,
 }
 
 async function doLookup(client, key, timeout, options) {
+  const startTime = Date.now();
   let memoValue;
   try {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
-    options.emitter.emit(`hit.${key}`);
+    options.emitter.emit('hit', key);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
-    if (err.name !== 'TimeoutError') {
-      options.on_error(err, client, key);
+    if (err.name === 'TimeoutError') {
+      options.emitter.emit('lookup_timeout', key);
     }else{
-      options.emitter.emit(`lookup_timeout.${key}`);
+      options.on_error(err, client, key);
     }
     // Continue on
     return MAGIC.not_found;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
+
+  options.emitter.emit('lookup', key, Date.now()-startTime);
   return memoValue;
 }
 
