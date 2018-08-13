@@ -23,7 +23,7 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) 
 }
 
 module.exports = function(client, options) {
-  const retryDelay = options.lock_retry_delay || 50;
+  const retryDelay = (options && options.lock_retry_delay) ? options.lock_retry_delay : 50;
 
   return async function lock(lockName, timeout) {
     const startTime = Date.now();
