@@ -9,7 +9,7 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) 
   try {
     const timeoutLeft = timeoutStamp - Date.now();
     if (timeoutLeft <= 0) {
-      if(emitter) emitter.emit('lock_timeout', lockName.split('.')[1]);
+      if(emitter) emitter.emit('lockTimeout', lockName.split('.')[1]);
       return;
     }
     // Set an exclusive key. PX is timeout in ms, NX is don't set if already set.

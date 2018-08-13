@@ -153,7 +153,7 @@ async function doLookup(client, key, timeout, options) {
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
     if (err.name === 'TimeoutError') {
-      options.emitter.emit('lookup_timeout', key);
+      options.emitter.emit('lookupTimeout', key);
     }else{
       options.on_error(err, client, key);
     }
