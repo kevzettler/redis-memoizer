@@ -75,7 +75,7 @@ function createMemoizeFunction(client, options = {}) {
       throw new Error('An error fn of the arity (err, client, key) must be passed as an option.');
     }
     if(!(options.emitter instanceof EventEmitter)){
-      throw new Error('An emitterd passed to the memoizer must be an instance of EventEmitter');
+      throw new Error('An emitter passed to the memoizer must be an instance of EventEmitter');
     }
   } catch (e) {
     e.message = `Redis-Memoizer: ${e.message}`;
