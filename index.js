@@ -120,7 +120,7 @@ function memoizeFn(client, options, lock, fn,
       // After we've acquired the lock, check if the key was populated in the meantime.
       const memoValueRetry = await doLookup(client, key, timeoutMs, options);
       if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
-      options.emitter.emit('miss', key);
+      options.emitter.emit('miss', functionKey);
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
@@ -146,14 +146,15 @@ function memoizeFn(client, options, lock, fn,
 
 async function doLookup(client, key, timeout, options) {
   const startTime = Date.now();
+  const functionKey = key.split(':')[2];
   let memoValue;
   try {
     memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
-    options.emitter.emit('hit', key);
+    options.emitter.emit('hit', functionKey);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
     if (err.name === 'TimeoutError') {
-      options.emitter.emit('lookupTimeout', key);
+      options.emitter.emit('lookupTimeout', functionKey);
     }else{
       options.on_error(err, client, key);
     }
@@ -162,7 +163,7 @@ async function doLookup(client, key, timeout, options) {
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
 
-  options.emitter.emit('lookup', key, Date.now()-startTime);
+  options.emitter.emit('lookup', functionKey, Date.now()-startTime);
   return memoValue;
 }
 

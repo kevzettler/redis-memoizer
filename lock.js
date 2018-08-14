@@ -7,9 +7,10 @@ const {exec} = require('./redisCompat');
 // that functions just carry on if the lock is held for too long.
 async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) {
   try {
+    const functionKey = lockName.split('.')[1].split(':')[2];
     const timeoutLeft = timeoutStamp - Date.now();
     if (timeoutLeft <= 0) {
-      if(emitter) emitter.emit('lockTimeout', lockName.split('.')[1]);
+      if(emitter) emitter.emit('lockTimeout', functionKey);
       return;
     }
     // Set an exclusive key. PX is timeout in ms, NX is don't set if already set.
@@ -35,10 +36,11 @@ module.exports = function(client, options) {
     await acquireLock(client, lockName, timeoutStamp, retryDelay, options.emitter);
 
     return function unlock() {
+      const functionKey = lockName.split('.')[1].split(':')[2];
       // Now that the task is done, if the lock would still exist, kill it
-      options.emitter.emit(`unlock.${lockName}`);
+      options.emitter.emit(`unlock.${functionKey}`);
       if (timeoutStamp > Date.now()) return exec(client, 'del', lockName);
-      if(options.emitter) options.emitter.emit('unlock', lockName.split('.')[1], Date.now() - startTime);
+      if(options.emitter) options.emitter.emit('unlock', functionKey, Date.now() - startTime);
       return Promise.resolve();
     };
   };
