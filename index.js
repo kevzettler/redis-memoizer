@@ -156,6 +156,7 @@ async function doLookup(client, key, timeout, options) {
     if (err.name === 'TimeoutError') {
       options.emitter.emit('lookupTimeout', functionKey);
     }else{
+      options.emitter.emit('error', functionKey);
       options.on_error(err, client, key);
     }
     // Continue on
