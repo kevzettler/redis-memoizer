@@ -114,7 +114,7 @@ function memoizeFn(client, options, lock, fn,
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
-    const unlock = await lock(cacheKey, lock_timeout);
+    const unlock = await lock(cacheKey, functionKey, lock_timeout);
     let didOriginalFn = false;
     try {
       // After we've acquired the lock, check if the cacheKey was populated in the meantime.

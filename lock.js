@@ -26,7 +26,7 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) 
 module.exports = function(client, options) {
   const retryDelay = (options && options.lock_retry_delay) ? options.lock_retry_delay : 50;
 
-  return async function lock(lockName, timeout) {
+  return async function lock(lockName, functionKey, timeout) {
     const startTime = Date.now();
     if (!lockName) {
       throw new Error("You must specify a lock key.");
@@ -36,7 +36,6 @@ module.exports = function(client, options) {
     await acquireLock(client, lockName, timeoutStamp, retryDelay, options.emitter);
 
     return function unlock() {
-      const functionKey = lockName.split('.')[1].split(':')[2];
       // Now that the task is done, if the lock would still exist, kill it
       options.emitter.emit(`unlock.${functionKey}`);
       if (timeoutStamp > Date.now()) return exec(client, 'del', lockName);
