@@ -108,7 +108,7 @@ function memoizeFn(client, options, lock, fn,
     const cacheKey = `${options.keyNamespace}:${functionKey}:${argsHash}`;
 
     // Attempt to get the result from redis.
-    const memoValue = await doLookup(client, cacheKey, timeoutMs, options);
+    const memoValue = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
     if (memoValue !== MAGIC.not_found) return memoValue;
 
@@ -118,7 +118,7 @@ function memoizeFn(client, options, lock, fn,
     let didOriginalFn = false;
     try {
       // After we've acquired the lock, check if the cacheKey was populated in the meantime.
-      const memoValueRetry = await doLookup(client, cacheKey, timeoutMs, options);
+      const memoValueRetry = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
       if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
       options.emitter.emit('miss', functionKey);
       // Run the fn, save the result
@@ -144,20 +144,19 @@ function memoizeFn(client, options, lock, fn,
   };
 }
 
-async function doLookup(client, key, timeout, options) {
+async function doLookup(client, cacheKey, functionKey, timeout, options) {
   const startTime = Date.now();
-  const functionKey = key.split(':')[2];
   let memoValue;
   try {
-    memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
+    memoValue = await Promise.resolve(getKeyFromRedis(client, cacheKey, options)).timeout(timeout);
     options.emitter.emit('hit', functionKey);
   } catch (err) {
-    err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
+    err.message = `Redis-Memoizer: Error getting cacheKey "${cacheKey}" with timeout ${timeout}: ${err.message}`;
     if (err.name === 'TimeoutError') {
       options.emitter.emit('lookupTimeout', functionKey);
     }else{
       options.emitter.emit('error', functionKey);
-      options.on_error(err, client, key);
+      options.on_error(err, client, cacheKey);
     }
     // Continue on
     return MAGIC.not_found;
