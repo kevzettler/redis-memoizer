@@ -36,7 +36,7 @@ module.exports = function(client, options) {
 
     return function unlock() {
       // Now that the task is done, if the lock would still exist, kill it
-      options.emitter.emit(`unlock.${functionKey}`);
+      options.emitter.emit('unlock', functionKey, Date.now() - startTime);
       if (timeoutStamp > Date.now()) return exec(client, 'del', lockName);
       if(options.emitter) options.emitter.emit('unlock', functionKey, Date.now() - startTime);
       return Promise.resolve();
