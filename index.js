@@ -105,37 +105,37 @@ function memoizeFn(client, options, lock, fn,
 
     // Set a timeout on the retrieval from redis.
     const timeoutMs = Math.min(ttlfn(), options.lookup_timeout);
-    const key = `${options.keyNamespace}:${functionKey}:${argsHash}`;
+    const cacheKey = `${options.keyNamespace}:${functionKey}:${argsHash}`;
 
     // Attempt to get the result from redis.
-    const memoValue = await doLookup(client, key, timeoutMs, options);
+    const memoValue = await doLookup(client, cacheKey, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
     if (memoValue !== MAGIC.not_found) return memoValue;
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
-    const unlock = await lock(key, lock_timeout);
+    const unlock = await lock(cacheKey, lock_timeout);
     let didOriginalFn = false;
     try {
-      // After we've acquired the lock, check if the key was populated in the meantime.
-      const memoValueRetry = await doLookup(client, key, timeoutMs, options);
+      // After we've acquired the lock, check if the cacheKey was populated in the meantime.
+      const memoValueRetry = await doLookup(client, cacheKey, timeoutMs, options);
       if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
       options.emitter.emit('miss', functionKey);
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
-      // Write the key, but don't await on it
-      writeKeyToRedis(client, key, result, ttlfn(result), options)
+      // Write the cacheKey, but don't await on it
+      writeKeyToRedis(client, cacheKey, result, ttlfn(result), options)
       .catch((err) => {
-        err.message = `Redis-Memoizer: Error writing key "${key}": ${err.message}`;
-        options.on_error(err, client, key);
+        err.message = `Redis-Memoizer: Error writing cacheKey "${cacheKey}": ${err.message}`;
+        options.on_error(err, client, cacheKey);
       });
 
       return result;
     } catch (e) {
       // original function errored, should we memoize that?
       if (didOriginalFn && options.memoize_errors_when(e)) {
-        await writeKeyToRedis(client, key, e, ttlfn(e), options);
+        await writeKeyToRedis(client, cacheKey, e, ttlfn(e), options);
       }
       throw e;
     } finally {
