@@ -5,9 +5,8 @@ const {exec} = require('./redisCompat');
 // Variant of redis-lock intended for use with redis-memoizer. Unlike redis-lock,
 // this instead takes an overall timeout, after which the lock is disregarded. This ensures
 // that functions just carry on if the lock is held for too long.
-async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) {
+async function acquireLock(client, lockName, functionKey, timeoutStamp, retryDelay, emitter) {
   try {
-    const functionKey = lockName.split('.')[1].split(':')[2];
     const timeoutLeft = timeoutStamp - Date.now();
     if (timeoutLeft <= 0) {
       if(emitter) emitter.emit('lockTimeout', functionKey);
@@ -19,7 +18,7 @@ async function acquireLock(client, lockName, timeoutStamp, retryDelay, emitter) 
   } catch (e) {
     // Try again if we errored for some reason: internal error or just lock already held.
     await Promise.delay(retryDelay);
-    return acquireLock(client, lockName, timeoutStamp, retryDelay);
+    return acquireLock(client, lockName, functionKey, timeoutStamp, retryDelay);
   }
 }
 
@@ -33,7 +32,7 @@ module.exports = function(client, options) {
     }
     lockName = `lock.${lockName}`;
     const timeoutStamp = Date.now() + timeout + 1;
-    await acquireLock(client, lockName, timeoutStamp, retryDelay, options.emitter);
+    await acquireLock(client, lockName, functionKey, timeoutStamp, retryDelay, options.emitter);
 
     return function unlock() {
       // Now that the task is done, if the lock would still exist, kill it
