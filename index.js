@@ -110,7 +110,10 @@ function memoizeFn(client, options, lock, fn,
     // Attempt to get the result from redis.
     const memoValue = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
-    if (memoValue !== MAGIC.not_found) return memoValue;
+    if (memoValue !== MAGIC.not_found){
+      options.emitter.emit('hit', functionKey);
+      return memoValue;
+    }
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
@@ -119,7 +122,11 @@ function memoizeFn(client, options, lock, fn,
     try {
       // After we've acquired the lock, check if the cacheKey was populated in the meantime.
       const memoValueRetry = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
-      if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
+      if (memoValueRetry !== MAGIC.not_found){
+        options.emitter.emit('hit', functionKey);
+        return memoValueRetry;
+      }
+
       options.emitter.emit('miss', functionKey);
       // Run the fn, save the result
       didOriginalFn = true;
@@ -149,7 +156,6 @@ async function doLookup(client, cacheKey, functionKey, timeout, options) {
   let memoValue;
   try {
     memoValue = await Promise.resolve(getKeyFromRedis(client, cacheKey, options)).timeout(timeout);
-    options.emitter.emit('hit', functionKey);
   } catch (err) {
     err.message = `Redis-Memoizer: Error getting cacheKey "${cacheKey}" with timeout ${timeout}: ${err.message}`;
     if (err.name === 'TimeoutError') {
