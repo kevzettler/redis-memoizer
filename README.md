@@ -98,6 +98,8 @@ const memoize = require("redis-memoizer")(redisClient, {
 	// 'message' is always present.
 	error_serialization_keys: ['name', 'stack']
 
+    // Optional event emitter that subscribes to internal events, see "Events' section below.
+        emitter: new EventEmitter()
 });
 ```
 
@@ -134,6 +136,49 @@ Note, cache stampedes can still happen if the same function is called from diffe
 
 Note that this module does serialization to JSON. Special affordances are made for Date objects, which will be correctly returned
 as Dates, but other, more complex types (like Functions) will not survive the serialization/deserialization.
+
+## Events
+
+The memoizer is instrumented with an event emitter. At initialization time an optional emitter can be passed as an option. This emitter emits the following events.
+
+* `miss`
+Triggers on a cache miss for functionKey.
+```
+  emitter.on('miss', (functionKey) => {});
+```
+* `hit`
+Triggered on a cache hit for functionKey.
+```
+  emitter.on('hit', (functionKey) => {});
+```
+
+* `lookupTimeout`
+Triggered when a lookup times out.
+```
+  emitter.on('lookupTimeout', (functionKey) => {})
+```
+
+* `lookup`
+Triggered when a lookup completes and passes the time taken.
+```
+  emitter.on('lookup', (functionKey, timeTaken) => {})
+```
+
+* `unlock`
+Triggered when a cache query is unlocked and passes the time taken.
+```
+  emitter.on('unlock', (functionKey, timeTaken) => {})
+```
+
+
+* `error`
+Triggered on a general error from the cache.
+```
+  emitter.on('error', (functionKey) => {})
+```
+
+
+
 
 ## Installation
 
