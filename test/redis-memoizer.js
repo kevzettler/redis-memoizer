@@ -1,11 +1,14 @@
+const EventEmitter = require('events');
 const crypto = require('crypto');
 const should = require('should');
+const sinon = require('sinon');
 const Promise = require('bluebird');
 
 const memoizePkg = require('../');
 const pkgJSON = JSON.stringify(require('../package.json'));
 const {exec} = require('../redisCompat');
 const PORT = parseInt(process.env.PORT) || 6379;
+const PASS = process.env.PASS;
 
 const hash = (string) => crypto.createHmac('sha1', 'memo').update(string).digest('hex');
 const key_namespace = Date.now();
@@ -14,6 +17,9 @@ const TYPS = {
   node_redis: 'redis',
   fakeredis: 'fakeredis',
 };
+
+const emitter = new EventEmitter();
+sinon.stub(emitter, 'emit');
 
 async function delKeys(client, keyPattern) {
   const keys = await exec(client, 'keys', keyPattern);
@@ -24,11 +30,16 @@ function makeDefaultOptions() {
   return {
     memoize_key_namespace: key_namespace,
     on_error: (err) => { throw err; },
+    emitter: emitter
   };
 }
 
 
 describe('redis-memoizer', () => {
+
+  beforeEach(() => {
+    emitter.emit.reset();
+  });
 
   const REDIS_TYP = TYPS[process.env.REDIS_TYP] || 'ioredis';
   const Redis = require(REDIS_TYP);
@@ -36,7 +47,11 @@ describe('redis-memoizer', () => {
     Promise.promisifyAll(Redis.RedisClient.prototype);
     Promise.promisifyAll(Redis.Multi.prototype);
   }
-  const client = Redis.createClient(PORT, 'localhost', {return_buffers: true});
+
+  const clientOptions = { return_buffers: true };
+  if(PASS) clientOptions.password = PASS;
+
+  const client = Redis.createClient(PORT, 'localhost', clientOptions);
   if (REDIS_TYP === 'fakeredis') client.options.return_buffers = true; // workaround check, it sets opts badly
 
   let memoize = memoizePkg(client, {
@@ -83,12 +98,19 @@ describe('redis-memoizer', () => {
     (Date.now() - start >= functionDelayTime).should.be.true;		// First call should go to the function itself
     callCount.should.equal(1);
 
+    should(emitter.emit.thirdCall.args).eql(['miss', 'fn1']);
+
     start = Date.now();
     ({ val1, val2 } = await memoized(1, 2));
     val1.should.equal(1);
     val2.should.equal(2);
     (Date.now() - start < functionDelayTime).should.be.true;		// Second call should be faster
     callCount.should.equal(1);
+
+    should(emitter.emit.lastCall.args).eql(['hit', 'fn1']);
+
+    should(emitter.emit.calledWith('lookup', 'fn1')).be.true();
+    should(emitter.emit.calledWith('unlock', 'fn1')).be.true();
   });
 
   it('should memoize large values (gzip)', async () => {

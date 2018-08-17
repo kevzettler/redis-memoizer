@@ -5,6 +5,7 @@ const util = require('util');
 const makeLockFn = require('./lock');
 const Promise = require('bluebird');
 const {clientTyp, exec, isReady} = require('./redisCompat');
+const EventEmitter = require('events');
 
 const GZIP_MAGIC = new Buffer('$gzip__');
 const MAGIC = {
@@ -42,6 +43,7 @@ const defaultOptions = {
   deserialize_value: defaultDeserializeValue,
   serialize_value: defaultSerializeValue,
   error_serialization_keys: ['name', 'stack'],
+  emitter: new EventEmitter()
 };
 
 function createMemoizeFunction(client, options = {}) {
@@ -50,7 +52,7 @@ function createMemoizeFunction(client, options = {}) {
 
   // Allow custom namespaces, e.g. by git revision.
   options.keyNamespace = `memos${options.memoize_key_namespace ? ':' + options.memoize_key_namespace : ''}`;
-  const lock = makeLockFn(client, options.lock_retry_delay);
+  const lock = makeLockFn(client, options);
 
   // Validation
   try {
@@ -71,6 +73,9 @@ function createMemoizeFunction(client, options = {}) {
     }
     if (typeof options.on_error !== 'function') {
       throw new Error('An error fn of the arity (err, client, key) must be passed as an option.');
+    }
+    if(!(options.emitter instanceof EventEmitter)){
+      throw new Error('An emitter passed to the memoizer must be an instance of EventEmitter');
     }
   } catch (e) {
     e.message = `Redis-Memoizer: ${e.message}`;
@@ -100,37 +105,44 @@ function memoizeFn(client, options, lock, fn,
 
     // Set a timeout on the retrieval from redis.
     const timeoutMs = Math.min(ttlfn(), options.lookup_timeout);
-    const key = `${options.keyNamespace}:${functionKey}:${argsHash}`;
+    const cacheKey = `${options.keyNamespace}:${functionKey}:${argsHash}`;
 
     // Attempt to get the result from redis.
-    const memoValue = await doLookup(client, key, timeoutMs, options);
+    const memoValue = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
     // We return an internal marker if this thing was actually not found, versus just null
-    if (memoValue !== MAGIC.not_found) return memoValue;
+    if (memoValue !== MAGIC.not_found){
+      options.emitter.emit('hit', functionKey);
+      return memoValue;
+    }
 
     // Ok, we're going to have to actually execute the function.
     // Lock ensures only one fn executes at a time and prevents a stampede.
-    const unlock = await lock(key, lock_timeout);
+    const unlock = await lock(cacheKey, functionKey, lock_timeout);
     let didOriginalFn = false;
     try {
-      // After we've acquired the lock, check if the key was populated in the meantime.
-      const memoValueRetry = await doLookup(client, key, timeoutMs, options);
-      if (memoValueRetry !== MAGIC.not_found) return memoValueRetry;
+      // After we've acquired the lock, check if the cacheKey was populated in the meantime.
+      const memoValueRetry = await doLookup(client, cacheKey, functionKey, timeoutMs, options);
+      if (memoValueRetry !== MAGIC.not_found){
+        options.emitter.emit('hit', functionKey);
+        return memoValueRetry;
+      }
 
+      options.emitter.emit('miss', functionKey);
       // Run the fn, save the result
       didOriginalFn = true;
       const result = await fn.apply(this, args);
-      // Write the key, but don't await on it
-      writeKeyToRedis(client, key, result, ttlfn(result), options)
+      // Write the cacheKey, but don't await on it
+      writeKeyToRedis(client, cacheKey, result, ttlfn(result), options)
       .catch((err) => {
-        err.message = `Redis-Memoizer: Error writing key "${key}": ${err.message}`;
-        options.on_error(err, client, key);
+        err.message = `Redis-Memoizer: Error writing cacheKey "${cacheKey}": ${err.message}`;
+        options.on_error(err, client, cacheKey);
       });
 
       return result;
     } catch (e) {
       // original function errored, should we memoize that?
       if (didOriginalFn && options.memoize_errors_when(e)) {
-        await writeKeyToRedis(client, key, e, ttlfn(e), options);
+        await writeKeyToRedis(client, cacheKey, e, ttlfn(e), options);
       }
       throw e;
     } finally {
@@ -139,19 +151,25 @@ function memoizeFn(client, options, lock, fn,
   };
 }
 
-async function doLookup(client, key, timeout, options) {
+async function doLookup(client, cacheKey, functionKey, timeout, options) {
+  const startTime = Date.now();
   let memoValue;
   try {
-    memoValue = await Promise.resolve(getKeyFromRedis(client, key, options)).timeout(timeout);
+    memoValue = await Promise.resolve(getKeyFromRedis(client, cacheKey, options)).timeout(timeout);
   } catch (err) {
-    err.message = `Redis-Memoizer: Error getting key "${key}" with timeout ${timeout}: ${err.message}`;
-    if (err.name !== 'TimeoutError') {
-      options.on_error(err, client, key);
+    err.message = `Redis-Memoizer: Error getting cacheKey "${cacheKey}" with timeout ${timeout}: ${err.message}`;
+    if (err.name === 'TimeoutError') {
+      options.emitter.emit('lookupTimeout', functionKey);
+    }else{
+      options.emitter.emit('error', functionKey);
+      options.on_error(err, client, cacheKey);
     }
     // Continue on
     return MAGIC.not_found;
   }
   if (memoValue instanceof Error) throw memoValue; // we memoized an error.
+
+  options.emitter.emit('lookup', functionKey, Date.now()-startTime);
   return memoValue;
 }
 
