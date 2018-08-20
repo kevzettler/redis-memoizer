@@ -1,5 +1,5 @@
 {
-  "name": "redis-memoizer",
+  "name": "@bitmex/redis-memoizer",
   "version": "5.0.0",
   "description": "A promise-based memoizer using redis as a shared cache, with TTL.",
   "engines": {
