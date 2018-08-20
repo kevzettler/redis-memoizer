@@ -143,37 +143,37 @@ The memoizer is instrumented with an event emitter. At initialization time an op
 
 * `miss`
 Triggers on a cache miss for functionKey.
-```
+```javascript
   emitter.on('miss', (functionKey) => {});
 ```
 * `hit`
 Triggered on a cache hit for functionKey.
-```
+```javascript
   emitter.on('hit', (functionKey) => {});
 ```
 
 * `lookupTimeout`
 Triggered when a lookup times out.
-```
+```javascript
   emitter.on('lookupTimeout', (functionKey) => {})
 ```
 
 * `lookup`
 Triggered when a lookup completes and passes the time taken.
-```
+```javascript
   emitter.on('lookup', (functionKey, timeTaken) => {})
 ```
 
 * `unlock`
 Triggered when a cache query is unlocked and passes the time taken.
-```
+```javascript
   emitter.on('unlock', (functionKey, timeTaken) => {})
 ```
 
 
 * `error`
 Triggered on a general error from the cache.
-```
+```javascript
   emitter.on('error', (functionKey) => {})
 ```
 
